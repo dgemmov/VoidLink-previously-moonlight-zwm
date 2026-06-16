@@ -31,7 +31,7 @@ jobs:
       - name: Build VoidLink IPA
         working-directory: ./external-voidlink
         run: |
-          xcodebuild -scheme VoidLink -sdk iphoneos -configuration Debug archive -archivePath $PWD/build/VoidLink.xcarchive CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED="NO" CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED="NO"
+          xcodebuild -scheme VoidLink -sdk iphoneos -configuration Debug archive -archivePath $PWD/build/VoidLink.xcarchive CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED="NO" CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED="NO" SWIFT_VERSION=5
           mkdir -p ./build/IPA/Payload
           cp -r ./build/VoidLink.xcarchive/Products/Applications/VoidLink.app ./build/IPA/Payload/VoidLink.app
           cd ./build/IPA && zip -r ../../build/VoidLink.ipa ./Payload/* && cd ../..
