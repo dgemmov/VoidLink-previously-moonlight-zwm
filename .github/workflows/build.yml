@@ -2,8 +2,6 @@ name: Build VoidLink IPA
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ "Integration" ]
 
 jobs:
   build:
@@ -19,10 +17,20 @@ jobs:
 
       - name: Build VoidLink
         run: |
-          xcodebuild -verbose -scheme VoidLink -sdk iphoneos -configuration Debug archive -archivePath $PWD/build/VoidLink.xcarchive CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED="NO" CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED="NO"
-          mkdir -p ./build/IPA && mkdir -p ./build/IPA/Payload
-          cp -r ./build/VoidLink.xcarchive/Products/Applications/VoidLink.app ./build/IPA/Payload/VoidLink.app
-          cd ./build/IPA && zip -r ../../build/VoidLink.ipa ./Payload/* && cd ../..
+          xcodebuild clean build \
+            -scheme VoidLink \
+            -sdk iphoneos \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED="NO" \
+            CODE_SIGNING_ALLOWED="NO" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CONFIGURATION_BUILD_DIR="$PWD/build/Output"
+          
+          mkdir -p ./build/IPA/Payload
+          cp -r ./build/Output/VoidLink.app ./build/IPA/Payload/VoidLink.app
+          cd ./build/IPA && zip -r ../VoidLink.ipa ./Payload && cd ../..
 
       - name: Upload VoidLink IPA to Artifacts
         uses: actions/upload-artifact@v4
