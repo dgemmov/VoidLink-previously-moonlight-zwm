@@ -8,6 +8,7 @@
 
 import Foundation
 import StoreKit
+import UIKit
 
 @objc public enum PurchaseStatus: Int {
     case notPurchased
@@ -135,6 +136,11 @@ import StoreKit
                 await listenForTransactions()
             }
         }
+        if #available(iOS 16.4, *) {
+            Task {
+                await listenForPurchaseIntents()
+            }
+        }
     }
 
     // MARK: - Fetch Products (StoreKit 2)
@@ -199,6 +205,18 @@ import StoreKit
 
     @available(iOS 15.0, *, *)
     private func purchaseStoreKit2(_ product: AddOnProduct) async {
+        guard IAPManager.canPurchase(product) else {
+            AlertControllerUtil.showAlert(
+                in: GenericUtils.topViewController(),
+                title: "In-app-purchase not available".localized,
+                message: "In-app-purchase not available on this device.".localized,
+                withCancel: false,
+                buttonTitle: "OK".localized,
+                countdown: 0
+                )
+            return
+        }
+
         let pid = product.productId()
         do {
             let products = try await Product.products(for: [pid])
@@ -211,30 +229,7 @@ import StoreKit
             }
 
             let result = try await sk2p.purchase()
-            
-            switch result {
-            case .success(let verification):
-                switch verification {
-                case .verified(let transaction):
-                    await MainActor.run {
-                        self.delegate?.iapManagerDidPurchase(product)
-                    }
-                    await transaction.finish()
-                    IAPManager.handlePurchaseSuccess(product)
-                    NotificationCenter.default.post(name: product.purchaseSucceededNotification(), object: nil)
-                case .unverified(_, let err):
-                    NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
-                    await MainActor.run {
-                        self.delegate?.iapManagerDidFailWithError(err)
-                    }
-                }
-            case .userCancelled:
-                NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
-                break
-            default:
-                NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
-                break
-            }
+            await handleStoreKit2PurchaseResult(result, product: product)
         } catch {
             await MainActor.run {
                 NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
@@ -243,21 +238,61 @@ import StoreKit
         }
     }
 
+    private static func canPurchase(_ product: AddOnProduct) -> Bool {
+        switch product {
+        case .PencilProPack:
+            return GenericUtils.isIPad()
+        default:
+            return true
+        }
+    }
+    
+    @available(iOS 15.0, *)
+    private func handleStoreKit2PurchaseResult(_ result: Product.PurchaseResult,
+                                               product: AddOnProduct) async {
+        switch result {
+        case .success(let verification):
+            switch verification {
+            case .verified(let transaction):
+                await MainActor.run {
+                    self.delegate?.iapManagerDidPurchase(product)
+                }
+                await transaction.finish()
+                IAPManager.handlePurchaseSuccess(product)
+            case .unverified(_, let err):
+                NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
+                await MainActor.run {
+                    self.delegate?.iapManagerDidFailWithError(err)
+                }
+            }
+        case .userCancelled:
+            NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
+        default:
+            NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
+        }
+    }
+
     @objc static func handlePurchaseSuccess(_ product: AddOnProduct) {
         switch product {
         case .PencilProPack:
+            if !GenericUtils.isIPad() {return}
             let dataMan = DataManager()
             let settings = dataMan.retrieveSettings()
             settings?.onscreenControls = 1
+            settings?.pencilTickMode = NSNumber(value: PencilTickMode.ManualTick.rawValue)
             dataMan.saveData()
             let profileMan = OSCProfilesManager.sharedManager(.zero)
             var toolkitProfileIndex = profileMan.getIndex(byName: "Pencil Pro")
-            if toolkitProfileIndex == nil {profileMan.importDefaultTemplates()}
+            if toolkitProfileIndex == nil {
+                profileMan.importDefaultTemplates()
+                GenericUtils.pencilProPurchaseProcessedWithImportingWidgetTemplates = true
+            }
             toolkitProfileIndex = profileMan.getIndex(byName: "Pencil Pro")
             profileMan.setProfileToSelected(toolkitProfileIndex ?? 1)
         default:
             break
         }
+        NotificationCenter.default.post(name: product.purchaseSucceededNotification(), object: nil)
     }
     
     private func purchaseLegacy(_ product: AddOnProduct) {
@@ -274,34 +309,43 @@ import StoreKit
     }
     
     // MARK: - Restore (StoreKit 2)
-
-    @objc public func restorePurchasesStoreKit2() {
-        if #available(iOS 15.0, *, *) {
-            Task {
-                await restoreStoreKit2()
-            }
-        }
-        else{
-            restorePurchasesLegacy()
-        }
-    }
-
-    @available(iOS 15.0, *, *)
-    private func restoreStoreKit2() async {
-        for await result in Transaction.currentEntitlements {
-            if case .verified(let transaction) = result,
-               let adp = AddOnProduct.from(productId: transaction.productID) {
-                await MainActor.run {
-                    self.delegate?.iapManagerDidRestore(adp)
+    @objc static func restore(product: AddOnProduct, in viewController: UIViewController){
+        if #available(iOS 15.0, *) {
+            Task{
+                do {
+                    try await AppStore.sync()
+                    IAPManager.checkPurchaseInfo(product) { info in
+                        if info.valid {
+                            IAPManager.handlePurchaseSuccess(product)
+                            AlertControllerUtil.showAlert(
+                                in: viewController,
+                                title: "",
+                                message: LocalizationHelper.localizedString(forKey:"[%@] has been restored", product.productName()),
+                                withCancel: false,
+                                buttonTitle: "OK".localized,
+                                countdown: 0
+                            )
+                        }
+                        else {
+                            NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.restore, userInfo:["interruption": PurchaseInterruption.restore.rawValue])
+                            AlertControllerUtil.showAlert(
+                                in: viewController,
+                                title: "",
+                                message: LocalizationHelper.localizedString(forKey:"Unable to detect purchased product: %@", product.productName()),
+                                withCancel: false,
+                                buttonTitle: "OK".localized,
+                                countdown: 0
+                            )
+                        }
+                    }
+                    
+                } catch {
+                    NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.restore, userInfo:["interruption": PurchaseInterruption.restore.rawValue])
+                    print("Restore failed: \(error)")
                 }
             }
         }
     }
-    
-    private func restorePurchasesLegacy() {
-        SKPaymentQueue.default().restoreCompletedTransactions()
-    }
-
 
     // MARK: - Listen update
 
@@ -315,6 +359,28 @@ import StoreKit
                     self.delegate?.iapManagerDidPurchase(adp)
                 }
                 await transaction.finish()
+            }
+        }
+    }
+
+    @available(iOS 16.4, *)
+    private func listenForPurchaseIntents() async {
+        for await intent in PurchaseIntent.intents {
+            guard let product = AddOnProduct.from(productId: intent.product.id) else {
+                continue
+            }
+            guard IAPManager.canPurchase(product) else {
+                continue
+            }
+
+            do {
+                let result = try await intent.product.purchase()
+                await handleStoreKit2PurchaseResult(result, product: product)
+            } catch {
+                await MainActor.run {
+                    NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
+                    self.delegate?.iapManagerDidFailWithError(error)
+                }
             }
         }
     }
@@ -368,9 +434,6 @@ import StoreKit
     
     @objc static public func inAppPurchaseAction(viewController: UIViewController, product: AddOnProduct){
         
-        
-        
-        
         let alert = UIAlertController(title: product.productName(),
                                       message: LocalizationHelper.localizedString(forKey: "No purchase found", product.productName()),
                                       preferredStyle: .alert)
@@ -381,20 +444,7 @@ import StoreKit
         
         let restoreAction = UIAlertAction(title: LocalizationHelper.localizedString(forKey: "Restore Purchase"), style: .default) { _ in
             if #available(iOS 13.0, *) {
-                Task{
-                    do {
-                        if #available(iOS 15.0, *) {
-                            try await AppStore.sync()
-                        } else {
-                            // Fallback on earlier versions
-                        }
-                    } catch {
-                        NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.restore, userInfo:["interruption": PurchaseInterruption.restore.rawValue])
-                        print("Restore failed: \(error)")
-                    }
-                }
-            } else {
-                // Fallback on earlier versions
+                IAPManager.restore(product: .PencilProPack, in: viewController)
             }
         }
         

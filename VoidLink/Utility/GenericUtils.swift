@@ -68,7 +68,7 @@ import UIKit
     
     @objc static func needUpdatePartialSettings() -> Bool {
         // let key = "needUpdateDefaultSettings20260226-1"
-        let key = "needUpdatePartialSettings20260428"
+        let key = "needUpdatePartialSettings20260620"
         guard !UserDefaults.standard.bool(forKey: key) else {
             return false
         }
@@ -262,6 +262,20 @@ import UIKit
         }
     }
     
+    @objc static var pencilProPurchaseProcessedWithImportingWidgetTemplates: Bool = false
+    @objc static func handleAddOnProductPurchaseIntent(for product:AddOnProduct) {
+        let key = "addOnProduct_\(product.productId())_purchased"
+        let defaults = UserDefaults.standard
+        let purchased = defaults.bool(forKey: key)
+        if !purchased {
+            IAPManager.checkPurchaseInfo(product) { info in
+                if info.valid {
+                    IAPManager.handlePurchaseSuccess(product)
+                    defaults.set(true, forKey: key)
+                }
+            }
+        }
+    }
     
     @objc static var hasTappedOnscreenGyroButton = false
     @objc static func isFirstTappingOnscreenGyroButton() -> Bool {
@@ -475,6 +489,8 @@ import UIKit
     @objc static func gamepadOverlayFeatureTipButtonTitle() -> String {
         LocalizationHelper.localizedString(forKey: "Got it!")
     }
+    
+    @objc static var pencilInStreaming:Bool = false
     
     @objc static func isIPhone() -> Bool {
         return UIDevice.current.userInterfaceIdiom == .phone
@@ -701,6 +717,44 @@ import UIKit
             responder = currentResponder.next
         }
         return nil
+    }
+
+    @objc static func rootViewController() -> UIViewController? {
+        if #available(iOS 13.0, *) {
+            return UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive }?
+                .windows
+                .first { $0.isKeyWindow }?
+                .rootViewController
+        } else {
+            return UIApplication.shared.keyWindow?.rootViewController
+        }
+    }
+
+    @objc static func topViewController() -> UIViewController? {
+        return topViewController(from: rootViewController())
+    }
+
+    private static func topViewController(from rootViewController: UIViewController?) -> UIViewController? {
+        if let navigationController = rootViewController as? UINavigationController {
+            return topViewController(from: navigationController.visibleViewController)
+        }
+
+        if let tabBarController = rootViewController as? UITabBarController {
+            return topViewController(from: tabBarController.selectedViewController)
+        }
+
+        if let splitViewController = rootViewController as? UISplitViewController,
+           let lastViewController = splitViewController.viewControllers.last {
+            return topViewController(from: lastViewController)
+        }
+
+        if let presentedViewController = rootViewController?.presentedViewController {
+            return topViewController(from: presentedViewController)
+        }
+
+        return rootViewController
     }
 }
 

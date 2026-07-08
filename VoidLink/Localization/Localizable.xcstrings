@@ -513,6 +513,29 @@
         }
       }
     },
+    "[%@] has been restored" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "【%@】已恢复"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「%@」已恢復"
+          }
+        },
+        "zh-HK" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「%@」已恢復"
+          }
+        }
+      }
+    },
     "%@ is currently running" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -715,7 +738,7 @@
         },
         "zh-HK" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "方向鍵"
           }
         }
@@ -1123,6 +1146,35 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "斷開連接"
+          }
+        }
+      }
+    },
+    "=drawingToolkit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drawing Toolkit"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "绘画"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "繪畫"
+          }
+        },
+        "zh-HK" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "繪畫"
           }
         }
       }
@@ -1742,7 +1794,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "= FPS Example (Keyboard & Mouse)"
+            "value" : "FPS Example (Keyboard & Mouse)"
           }
         },
         "zh-Hans" : {
@@ -6612,19 +6664,42 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "绘画"
+            "value" : "绘画进阶套件"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "繪畫"
+            "value" : "繪畫進階套件"
           }
         },
         "zh-HK" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "繪畫"
+            "value" : "繪畫進階套件"
+          }
+        }
+      }
+    },
+    "Drawing Toolkit already purchased" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您已拥有【绘画进阶套件】"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您已擁有「繪畫進階套件」"
+          }
+        },
+        "zh-HK" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您已擁有「繪畫進階套件」"
           }
         }
       }
@@ -6721,7 +6796,7 @@
         },
         "zh-HK" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "一塊啥都不幹的擋板區域"
           }
         }
@@ -9085,6 +9160,29 @@
         }
       }
     },
+    "I'm an artist" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我是画手"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我是畫手"
+          }
+        },
+        "zh-HK" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我是畫手"
+          }
+        }
+      }
+    },
     "Import" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9127,6 +9225,52 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "重要提示"
+          }
+        }
+      }
+    },
+    "In-app-purchase not available" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法使用 App 内购买"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法使用 App 內購買"
+          }
+        },
+        "zh-HK" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法使用 App 內購買"
+          }
+        }
+      }
+    },
+    "In-app-purchase not available on this device." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备无法使用该 App 内购买项目。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此裝置無法使用該 App 內購買項目。"
+          }
+        },
+        "zh-HK" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此裝置無法使用該 App 內購買項目。"
           }
         }
       }
@@ -10780,7 +10924,7 @@
         },
         "zh-Hant" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "您目前的網路連線似乎正在阻擋遠端工作階段。在此網路上連線時，串流可能無法運作。\n\n下列網路連接埠被封鎖：\n%s"
           }
         },
@@ -10809,13 +10953,13 @@
         },
         "zh-Hant" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "此網路似乎未阻擋遠端工作階段。如果您仍然無法連線，請檢查您電腦的防火牆設定。"
           }
         },
         "zh-HK" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "此網路似乎未阻擋遠端工作階段。如果您仍然無法連線，請檢查您電腦的防火牆設定。"
           }
         }
@@ -10942,25 +11086,25 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Purchase [%@] for:\n-  Pro-level pressure curve tool.\n- Improved stroke transmission & responsiveness,  and user-defined keyboard/mouse shortcut for double tap & squeeze, in the remote drawing workflow.\n- Exclusive drawing-related on-screen buttons.\n- And more …\nNote: basic remote drawing function remains available without purchasing this add-on component."
+            "value" : "Purchase [%@] for:\n-  Pro-level pencil pressure curve tool.\n- Improved stroke transmission & responsiveness,  and user-defined keyboard/mouse shortcut for double tap & squeeze, in the remote drawing workflow.\n- Exclusive drawing-related on-screen buttons.\n- And more …\nNote: basic pencil function remains available without purchasing this add-on component."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "购买 [%@] 可解锁：\n- 专业级压力曲线工具。\n- 在远程绘图流程中提升笔触传输效率与响应表现，并支持用户自定义的双击及捏合键盘/鼠标快捷键。\n- 专属绘图相关的屏显按钮。\n以及更多功能..."
+            "value" : "基础Pencil功能之上，购买 [%@] 可解锁：\n- 专业级笔压曲线工具。\n- 远程绘画笔迹传输优化、笔触响应性能优化。\n- 支持用户自定义的双击及捏合键盘/鼠标快捷键。\n- 专属绘图相关的屏显按钮。\n..."
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "解鎖 [%@] ：\n- 專業級壓力曲線工具。\n- 在遠端繪圖流程中提升筆觸傳輸效率與響應表現，並支援使用者自訂的雙擊及捏合鍵盤/滑鼠快捷鍵。\n- 專屬繪圖相關的螢幕顯示按鈕。\n- 以及更多功能..."
+            "value" : "在基礎Pencil功能之上，購買 [%@] 可解鎖：\n- 專業級筆壓曲線工具。\n- 最佳化遠端繪畫的筆跡傳輸與筆觸響應效能。\n- 並支援使用者自訂的雙擊及捏合鍵盤/滑鼠快捷鍵。\n- 專屬繪圖相關的螢幕顯示按鈕。\n..."
           }
         },
         "zh-HK" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "解鎖 [%@] ：\n- 專業級壓力曲線工具。\n- 在遠端繪圖流程中提升筆觸傳輸效率與響應表現，並支援使用者自訂的雙擊及捏合鍵盤/滑鼠快捷鍵。\n- 專屬繪圖相關的螢幕顯示按鈕。\n- 以及更多功能...\n基礎繪畫功能無需購買 [%@] 即可使用。"
+            "value" : "在基礎Pencil功能之上，購買 [%@] 可解鎖：\n- 專業級筆壓曲線工具。\n- 最佳化遠端繪畫的筆跡傳輸與筆觸響應效能。\n- 並支援使用者自訂的雙擊及捏合鍵盤/滑鼠快捷鍵。\n- 專屬繪圖相關的螢幕顯示按鈕。\n..."
           }
         }
       }
@@ -16326,6 +16470,29 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "查看教學"
+          }
+        }
+      }
+    },
+    "Unable to detect purchased product: %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未检测到已购产品【%@】"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未偵測到已購產品「%@」"
+          }
+        },
+        "zh-HK" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未偵測到已購產品「%@」"
           }
         }
       }

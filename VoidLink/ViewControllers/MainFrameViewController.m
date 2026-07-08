@@ -1751,7 +1751,9 @@ static NSMutableSet* hostList;
     DataManager* dataMan = [[DataManager alloc] init];
     Settings* settings = [dataMan retrieveSettings];
     settings.touchMoveEventInterval = @(0);
-    settings.localMousePointerMode = @(2);
+    settings.localMousePointerMode = @(0);
+    if (@available(iOS 14.0, tvOS 14.0, *)) nil;
+    else settings.appTheme = @(UIUserInterfaceStyleDark);
     [dataMan saveData];
 }
 
@@ -1875,10 +1877,12 @@ static NSMutableSet* hostList;
     
     [self prewarmSoftKeyboard];
         
-    [IAPManager.shared fetchProducts];
-    
     [self changeDefaultSettings];
     [self updatePartialSettings];
+    
+    [IAPManager.shared fetchProducts];
+    [GenericUtils handleAddOnProductPurchaseIntentFor:AddOnProductPencilProPack];
+
     /*
     if (@available(iOS 15.0, *)) {
         [IAPManager checkPurchaseInfo:AddOnProductPencilProPack completion:^(PurchaseInfo* info) {

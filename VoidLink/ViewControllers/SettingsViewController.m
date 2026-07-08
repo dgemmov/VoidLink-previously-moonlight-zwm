@@ -1037,7 +1037,7 @@ BOOL isCustomResolution(int resolutionSelected) {
     if ([GenericUtils isIPad] && loadPencilSection) {
         MenuSectionView *pencilSection = [[MenuSectionView alloc] init];
         pencilSection.delegate = self;
-        pencilSection.sectionTitle = [LocalizationHelper localizedStringForKey:@"Drawing Toolkit"];
+        pencilSection.sectionTitle = [LocalizationHelper localizedStringForKey:@"=drawingToolkit"];
         pencilSection.identifier = @"SettingsSectionPencil";
         if (@available(iOS 13.0, *)) {
             [pencilSection setSectionWithIcon:[UIImage systemImageNamed:@"pencil.and.outline"] size:19 weight:UIImageSymbolWeightHeavy sizeConstraint:-16.5];
@@ -3004,6 +3004,8 @@ BOOL isCustomResolution(int resolutionSelected) {
 }
 
 - (void)mainFrameGameProfileButtonTapped{
+    self.definesPresentationContext = NO;
+    
     [self saveGameProfileConfigs];
     
     self.layoutOnScreenControlsVC = [self instantiateOscLayoutViewController];
@@ -3846,7 +3848,10 @@ BOOL isCustomResolution(int resolutionSelected) {
 }
 
 - (void)pencilProPurchaseSucceeded:(NSNotification *)notification{
-    self.onScreenWidgetSelector.selectedSegmentIndex = OnScreenControlsLevelCustom;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.onScreenWidgetSelector.selectedSegmentIndex = OnScreenControlsLevelCustom;
+        self.pencilTickSelector.selectedSegmentIndex = ManualTick;
+    });
 }
 
 - (void)pencilTickIntervalSliderMoved:(UISlider* )sender{
