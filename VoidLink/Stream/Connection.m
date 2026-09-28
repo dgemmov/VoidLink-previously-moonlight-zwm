@@ -61,6 +61,7 @@ static AVAudioFormat *audioFormat;
 static bool muteInBackground;
 static bool fullColorRange;
 static bool request10BitCodec;
+static bool useDualSenseAuthoredPCM = false;
 
 static VideoDecoderRenderer* renderer;
 
@@ -357,6 +358,14 @@ void ArCleanup(void)
     useSystemAudioEngine = useSysAudioEngine;
 }
 
++ (bool)useDualSenseAuthoredPCM {
+    return useDualSenseAuthoredPCM;
+}
+
++ (void)setuseDualSenseAuthoredPCM:(bool)use {
+    useDualSenseAuthoredPCM = use;
+}
+
 void AudioEngineInit(int sampleRate, int channelCount) {
     
     audioEngine = [[AVAudioEngine alloc] init];
@@ -576,6 +585,58 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     [_callbacks setControllerLed:controllerNumber r:r g:g b:b];
 }
 
+void ClSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags,
+                           uint8_t typeLeft, uint8_t typeRight,
+                           uint8_t* left, uint8_t* right)
+{
+    [_callbacks setAdaptiveTriggers:controllerNumber
+                         eventFlags:eventFlags
+                           typeLeft:typeLeft
+                          typeRight:typeRight
+                               left:left
+                              right:right];
+}
+
+void ClDs5HapticsPcm(const LI_DS5_HAPTICS_PCM_FRAME* frame)
+{
+    if (frame == NULL || frame->pcmData == NULL) {
+        return;
+    }
+
+    // common-c owns pcmData only for this callback, so copy before returning.
+    NSData* pcmData = [NSData dataWithBytes:frame->pcmData length:frame->pcmDataLength];
+    [ControllerUtil enqueueDualSenseHapticsPCMWithControllerNumber:frame->controllerNumber
+                                                             flags:frame->flags
+                                                    sequenceNumber:frame->sequenceNumber
+                                                presentationTimeUs:frame->presentationTimeUs
+                                                        frameCount:frame->frameCount
+                                                           pcmData:pcmData];
+}
+
+void ClDs5HapticsIrV2(const LI_DS5_HAPTICS_IR_FRAME_V2* frame)
+{
+    if (frame == NULL) {
+        return;
+    }
+
+    [ControllerUtil enqueueDualSenseHapticsIRV2WithControllerNumber:frame->controllerNumber
+                                                              flags:frame->flags
+                                               sourceSequenceNumber:frame->sourceSequenceNumber
+                                                        timestampUs:frame->timestampUs
+                                                   sourceFrameCount:frame->sourceFrameCount
+                                                            leftRms:frame->lanes[0].rmsAmplitude
+                                                           leftPeak:frame->lanes[0].peakAmplitude
+                                                      leftTransient:frame->lanes[0].transientStrength
+                                                       leftLowRatio:frame->lanes[0].lowBandRatio
+                                                    leftZeroCrossHz:frame->lanes[0].zeroCrossingRateHz
+                                                           rightRms:frame->lanes[1].rmsAmplitude
+                                                          rightPeak:frame->lanes[1].peakAmplitude
+                                                     rightTransient:frame->lanes[1].transientStrength
+                                                      rightLowRatio:frame->lanes[1].lowBandRatio
+                                                   rightZeroCrossHz:frame->lanes[1].zeroCrossingRateHz
+                                                    laneCorrelation:frame->laneCorrelation];
+}
+
 -(void) terminate
 {
     // Interrupt any action blocking LiStartConnection(). This is
@@ -585,6 +646,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     LiInterruptConnection();
     [audioPlayerNode stop];
     [audioEngine stop];
+    [ControllerUtil stopAllDualSenseHaptics];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 
     // We dispatch this async to get out because this can be invoked
@@ -677,6 +739,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     _streamConfig.audioConfiguration = config.audioConfiguration;
     _streamConfig.redirectMic = config.redirectMic && [MicHandler permissionGranted];
     [Connection setVolume:config.localVolume];
+    
     // Since we require iOS 12 or above, we're guaranteed to be running
     // on a 64-bit device with ARMv8 crypto instructions, so we don't
     // need to check for that here.
@@ -737,7 +800,14 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     _clCallbacks.rumbleTriggers = ClRumbleTriggers;
     _clCallbacks.setMotionEventState = ClSetMotionEventState;
     _clCallbacks.setControllerLED = ClSetControllerLED;
-    
+    _clCallbacks.setAdaptiveTriggers = ClSetAdaptiveTriggers;
+    useDualSenseAuthoredPCM = (config.emulatedControllerType == ControllerEmulationPsEnhancedHaptic
+                               && ControllerUtil.hasDualSenseController) || config.hapticEngine == RumbleDevice;
+    if (useDualSenseAuthoredPCM) {
+        _clCallbacks.ds5HapticsPcm = ClDs5HapticsPcm;
+        // _clCallbacks.ds5HapticsIrV2 = ClDs5HapticsIrV2;
+    }
+
     [[NSNotificationCenter defaultCenter] addObserver:self
            selector:@selector(handleAudioSessionInterruption:)
                name:AVAudioSessionInterruptionNotification
