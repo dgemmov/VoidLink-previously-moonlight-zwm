@@ -13,7 +13,8 @@
 #import "MainFrameViewController.h"
 #import "SceneDelegate.h"
 #import "VoidLink-Swift.h"
-#import "DataManager.h"
+#import "TemporaryHost.h"
+#import "TemporaryApp.h"
 
 #if TARGET_OS_TV
 @interface AppDelegate ()
@@ -49,35 +50,31 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
 
 #if !TARGET_OS_TV
 
-/*
-// orietation limitatioin test
 - (UIInterfaceOrientationMask)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window {
-    UIViewController *topController = window.rootViewController;
-    while (topController.presentedViewController) {
-        topController = topController.presentedViewController;
-    }
-    return [topController supportedInterfaceOrientations];
-}
-*/
+    DataManager *dataMan = [[DataManager alloc] init];
+    Settings *currentSettings = [dataMan retrieveSettings];
 
-/*
-- (UIInterfaceOrientationMask)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window {
-    NSLog(@"orientation limit");
-        return UIInterfaceOrientationMaskLandscape;
+    if (currentSettings.unlockDisplayOrientation) {
+        return UIInterfaceOrientationMaskAll;
+    }
+
+    return PublicUtils.isIPhone
+        ? UIInterfaceOrientationMaskLandscape
+        : [PublicUtils getCurrentOrientationForWindow:window];
 }
-*/
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     // Override point for command tool customization after application launch (works only when user default is nil)
     [CommandManager presetDefaultCommands];
     [GenericUtils installSegmentedControlPreviousSelectionTracking];
     [IAPManager shared];
+    [IAPManager refreshPurchaseCache];
     
     // For iOS 12 and below, we need to manually create the window
     if (@available(iOS 13.0, *)) {
         // Scene delegate will handle window creation
     } else {
-        self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+        self.window = [[UIWindow alloc] initWithFrame:[[PublicUtils currentScreen] bounds]];
         
         NSString *storyboardName;
         if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
@@ -107,10 +104,14 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     [CommandManager presetDefaultCommands];
     [GenericUtils installSegmentedControlPreviousSelectionTracking];
+    [PublicUtils installTextFieldControllerUserInteractionTracking];
+    [PublicUtils changeDefaultSettingsForView:nil];
+    [PublicUtils updatePartialSettings];
     [IAPManager shared];
+    [IAPManager refreshPurchaseCache];
 
     // tvOS mounts the settings view lazily when its reveal menu first opens.
-    // Read its Core Data snapshot now so that first presentation is RAM-only.
+    // Capture the persisted defaults so the first presentation can use the snapshot.
     DataManager *dataManager = [[DataManager alloc] init];
     self.tvOSInitialSettingsSnapshot = [dataManager getSettings];
     return YES;
@@ -163,9 +164,19 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
 
 - (void)saveContext
 {
+    [self saveContextWaiting:NO];
+}
+
+- (void)saveContextSynchronously
+{
+    [self saveContextWaiting:YES];
+}
+
+- (void)saveContextWaiting:(BOOL)wait
+{
     NSManagedObjectContext *managedObjectContext = [self managedObjectContext];
     if (managedObjectContext != nil) {
-        [managedObjectContext performBlock:^{
+        void (^save)(void) = ^{
             if (![managedObjectContext hasChanges]) {
                 return;
             }
@@ -178,7 +189,12 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
             NSData* dbData = [NSData dataWithContentsOfURL:[[[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] lastObject] URLByAppendingPathComponent:DB_NAME]];
             [[NSUserDefaults standardUserDefaults] setObject:dbData forKey:DB_NAME];
 #endif
-        }];
+        };
+        if (wait) {
+            [managedObjectContext performBlockAndWait:save];
+        } else {
+            [managedObjectContext performBlock:save];
+        }
     }
 }
 

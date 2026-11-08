@@ -11,19 +11,20 @@
 @import ImageIO;
 
 #import "MainFrameViewController.h"
+#import "SceneDelegate.h"
 #import "CryptoManager.h"
 #import "HttpManager.h"
 #import "Connection.h"
 #import "StreamManager.h"
 #import "Utils.h"
-#import "DataManager.h"
-#import "TemporarySettings.h"
+#import "AppDelegate.h"
+#import "TemporaryHost.h"
+#import "TemporaryApp.h"
 #import "WakeOnLanManager.h"
 #import "AppListResponse.h"
 #import "ServerInfoResponse.h"
 #import "StreamFrameViewController.h"
 #import "LoadingFrameViewController.h"
-#import "TemporaryApp.h"
 #import "IdManager.h"
 #import "ConnectionHelper.h"
 #import "LocalizationHelper.h"
@@ -31,12 +32,9 @@
 #if !TARGET_OS_TV
 #import "CustomEdgeSlideGestureRecognizer.h"
 #endif
-#import "DataManager.h"
 #import "VoidLink-Swift.h"
 
-#if !TARGET_OS_TV
-#import "SettingsViewController.h"
-#else
+#if TARGET_OS_TV
 #import <sys/utsname.h>
 #endif
 
@@ -53,6 +51,7 @@
 #endif
 @property (nonatomic, strong, readwrite) NSArray<TemporaryApp *> *sortedAppList;
 @property (nonatomic, assign) bool settingsViewExpanded;
+@property (nonatomic, strong, readwrite) DeeplinkCoordinator *deeplinkCoordinator;
 @end
 
 #if TARGET_OS_TV
@@ -73,6 +72,13 @@ static NSArray<UIBarButtonItem *> *VLBarButtonItems(UIBarButtonItem *first, UIBa
     UIBarButtonItem* _addHostButton;
     UIBarButtonItem* _helpButton;
     UIBarButtonItem* _upButton;
+    NSArray<NSLayoutConstraint *> *_appCollectionSafeAreaConstraints;
+    UIViewAutoresizing _appCollectionOriginalAutoresizingMask;
+    BOOL _appCollectionOriginalTranslatesAutoresizingMask;
+#if DEBUG
+    NSMutableDictionary<NSString *, NSString *> *_appCollectionLayoutDiagnosticStates;
+#endif
+    BOOL _profilesButtonUsesCompactSymbol;
 
     UILabel* hostViewTitleLabel;
     //CGFloat recordedScreenWidth;
@@ -88,6 +94,7 @@ static NSArray<UIBarButtonItem *> *VLBarButtonItems(UIBarButtonItem *first, UIBa
     LoadingFrameViewController* _loadingFrame;
     FrontViewPosition currentPosition;
     NSCache* _boxArtCache;
+    NSOperationQueue* _boxArtQueue;
     bool _background;
     bool _enteredAppView;
     UIView* menuSeparator;
@@ -100,11 +107,48 @@ static NSArray<UIBarButtonItem *> *VLBarButtonItems(UIBarButtonItem *first, UIBa
     NSTimer *_foregroundHostUpdateTimer;
     
     id _controllerConnectObserver;
+    BOOL _openingDeeplinkHost;
     id _controllerDisconnectObserver;
     UIView* _debugGamepadOverlay;
 
 }
 static NSMutableSet* hostList;
+
+- (DeeplinkCoordinator *)deeplinkCoordinator {
+    if (!_deeplinkCoordinator) {
+        _deeplinkCoordinator = [[DeeplinkCoordinator alloc] initWithMainFrame:self];
+    }
+    return _deeplinkCoordinator;
+}
+
+- (BOOL)wakeDeeplinkHost:(TemporaryHost *)host {
+    if (host.mac.length == 0 || [host.mac isEqualToString:@"00:00:00:00:00:00"]) return NO;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [WakeOnLanManager wakeHost:host];
+    });
+    return YES;
+}
+
+- (void)prepareDeeplinkHostView {
+    [self closeSettingViewAnimated:NO];
+    [self switchToHostView];
+    [_discMan startDiscovery];
+    [self.hostCollectionVC reportOnlineHostsForDeeplink];
+}
+
+- (void)openDeeplinkHost:(TemporaryHost *)host showHiddenApps:(BOOL)showHiddenApps {
+    if ([self isStreaming]) return;
+    _selectedHost = host;
+    _showHiddenApps = showHiddenApps;
+    if (host.pairState == PairStatePaired) {
+        _openingDeeplinkHost = YES;
+        [self switchToAppView];
+        _openingDeeplinkHost = NO;
+    } else {
+        [self pairButtonTappedForHost:host];
+    }
+}
+
 
 - (void)startPairing:(NSString *)PIN {
     // Needs to be synchronous to ensure the alert is shown before any potential
@@ -154,16 +198,24 @@ static NSMutableSet* hostList;
 
 - (void)pairSuccessful:(NSData*)serverCert {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Store the cert from pairing with the host
         self->_selectedHost.serverCert = serverCert;
-        
-        [self->_pairAlert dismissViewControllerAnimated:YES completion:nil];
+        UIAlertController *pairAlert = self->_pairAlert;
         self->_pairAlert = nil;
-        
-        [self->_discMan startDiscovery];
-        [self alreadyPaired];
+        void (^continueToApps)(void) = ^{
+            [self->_discMan startDiscovery];
+            if ([self->_deeplinkCoordinator isWaitingForAppsForHost:self->_selectedHost]) {
+                self->_openingDeeplinkHost = YES;
+                [self switchToAppView];
+                self->_openingDeeplinkHost = NO;
+            } else {
+                [self alreadyPaired];
+            }
+        };
+        if (pairAlert) [pairAlert dismissViewControllerAnimated:YES completion:continueToApps];
+        else continueToApps();
     });
 }
+
 
 - (void)updateTitle {
 
@@ -268,6 +320,7 @@ static NSMutableSet* hostList;
                     [[self activeViewController] presentViewController:applistAlert animated:YES completion:nil];
                 }];
                 host.state = StateOffline;
+                [self hostCardContentsDidChange:host];
             });
         } else {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -281,7 +334,9 @@ static NSMutableSet* hostList;
                 [self updateAppsForHost:host];
                 [self->_appManager stopRetrieving];
                 [self->_appManager retrieveAssetsFromHost:host];
-                [self hideLoadingFrame: nil];
+                [self hideLoadingFrame:^{
+                    [self->_deeplinkCoordinator appsDidRefreshFor:host];
+                }];
             });
         }
     });
@@ -366,6 +421,7 @@ static NSMutableSet* hostList;
 }
 
 - (void)switchToHostView {
+    [_deeplinkCoordinator didReturnToHostView];
     _enteredAppView = false;
     [_appManager stopRetrieving];
     _showHiddenApps = NO;
@@ -374,6 +430,9 @@ static NSMutableSet* hostList;
     
     // [self.collectionView removeFromSuperview]; // necessary for new scroll host view reloading mechanism
     self.hostCollectionVC.view.hidden = NO;
+    if (![self isStreaming]) {
+        [self.hostCollectionVC refreshVisibleHostCards];
+    }
     self.collectionView.hidden = YES;
     [self updateTitle];
     self.navigationItem.rightBarButtonItems = PublicUtils.isTVOS
@@ -386,19 +445,36 @@ static NSMutableSet* hostList;
         [ControllerNavigator setUINavigationDelegate:self.isInAppView ? self.hostCollectionVC : self.hostCollectionVC];
         if(ControllerNavigator.radialMenuView.superview) [ControllerNavigator updateRadialMenu];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [ControllerNavigator restoreUINavigationHighlight];
+            if (ControllerNavigator.uiNavigationDelegate == self.hostCollectionVC && ![self isStreaming]) {
+                [ControllerNavigator restoreUINavigationHighlight];
+            }
         });
     }
 }
 
 - (void) receivedAssetForApp:(TemporaryApp*)app {
-    // Update the box art cache now so we don't have to do it
-    // on the main thread
-    [self updateBoxArtCacheForApp:app];
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self.collectionView reloadData];
-    });
+    // Refresh downloaded assets on the same bounded queue as cache prefetches.
+    [_boxArtQueue addOperationWithBlock:^{
+        @autoreleasepool {
+            [self->_boxArtCache removeObjectForKey:app];
+            [self updateBoxArtCacheForApp:app];
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (![self isInAppView] || app.host != self->_selectedHost) return;
+                for (UICollectionViewCell* cell in self.collectionView.visibleCells) {
+                    for (UIView* view in cell.subviews) {
+                        if ([view isKindOfClass:[UIAppView class]]) {
+                            UIAppView* appView = (UIAppView*)view;
+                            if (appView.app.host == app.host && [appView.app.id isEqualToString:app.id]) {
+                                [appView updateAppImage];
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }];
 }
 
 - (void)displayDnsFailedDialog {
@@ -411,6 +487,7 @@ static NSMutableSet* hostList;
 }
 
 - (void)switchToAppView{
+    if (!_openingDeeplinkHost) [_deeplinkCoordinator userWillEnterAppView];
     if (@available(iOS 13.0, *)) {
         [ControllerNavigator setUINavigationDelegate:self];
     }
@@ -432,16 +509,16 @@ static NSMutableSet* hostList;
     self.revealViewController.mainFrameIsInHostView = false;
     // [self disableNavigation];
     [self updateTitle];
+    if (_openingDeeplinkHost) {
+        [self hideLoadingFrame:^{ [self->_deeplinkCoordinator didEnterDeeplinkAppView]; }];
+    }
     [self alreadyPaired];
+    [self refreshAppCollectionLayout];
     // self.navigationController.navigationBar.backgroundColor = [ThemeManager appBackgroundColor];
     // self.navigationController.navigationBar.translucent = NO;
     //[self applyNavBarAppearance:navBarAppearance];
     
-    
-    dispatch_time_t delayTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC));
-    dispatch_after(delayTime, dispatch_get_main_queue(), ^{
-        if(@available(iOS 13.0, *)) if(ControllerUtil.primaryGCController) [ControllerNavigator restoreUINavigationHighlight];
-    });
+    [self refreshAppNavigationHighlight];
 }
 
 - (void)appButtonTappedForHost:(TemporaryHost *)host{
@@ -536,10 +613,12 @@ static NSMutableSet* hostList;
                     }];
 
                     host.state = StateOffline;
+                    [self hostCardContentsDidChange:host];
                 });
             } else {
                 // Update the host object with this data
                 [serverInfoResp populateHost:host];
+                [self hostCardContentsDidChange:host];
                 // Only pair when this was the result of explicit user action
                     Log(LOG_I, @"Trying to pairTrying to pair");
                     // Polling the server while pairing causes the server to screw up
@@ -560,6 +639,8 @@ static NSMutableSet* hostList;
     [self.collectionView setCollectionViewLayout:self.collectionViewLayout];
     [self.collectionView reloadData]; //for new scroll host view reloading mechanism
     [self.view addSubview:self.collectionView]; //for new scroll host view reloading mechanism
+    [self constrainIPhoneAppViewToSafeArea];
+    [self refreshAppNavigationHighlight];
     
     // 若未在线或未配对, 有以下:
     
@@ -609,10 +690,12 @@ static NSMutableSet* hostList;
                         [self switchToHostView];
                     }];
                     host.state = StateOffline;
+                    [self hostCardContentsDidChange:host];
                 });
             } else {
                 // Update the host object with this data
                 [serverInfoResp populateHost:host];
+                [self hostCardContentsDidChange:host];
                 if (host.pairState == PairStatePaired) {
                     Log(LOG_I, @"Already Paired");
                     [self alreadyPaired];
@@ -745,6 +828,9 @@ static NSMutableSet* hostList;
         }]];
     }*/
 #endif
+    if (host.pairState == PairStatePaired) {
+        [DeeplinkCoordinator addLinkActionTo:longClickAlert presenter:self host:host appID:nil];
+    }
     [longClickAlert addAction:[UIAlertAction actionWithTitle:[LocalizationHelper localizedStringForKey:@"Remove Host"] style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action) {   // host removed here
         [self->_discMan removeHostFromDiscovery:host];
         [self.hostCollectionVC removeHost:host];
@@ -940,7 +1026,7 @@ static NSMutableSet* hostList;
     
     bool sdrPerformanceWorkaround = false;
     switch (streamSettings.preferredCodec) {
-        case CODEC_PREF_AV1:
+        case TemporarySettingsCodecPreferenceAv1:
 #if defined(__IPHONE_16_0) || defined(__TVOS_16_0)
             if (VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)) {
                 _streamConfig.fullColorRange = false;
@@ -955,8 +1041,8 @@ static NSMutableSet* hostList;
 #endif
             // Fall-through
             
-        case CODEC_PREF_AUTO:
-        case CODEC_PREF_HEVC:
+        case TemporarySettingsCodecPreferenceAuto:
+        case TemporarySettingsCodecPreferenceHevc:
             if (VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)) {
                 if (streamSettings.enableYUV444) {
                     if(sdrPerformanceWorkaround && [Utils hdrSupported]) _streamConfig.supportedVideoFormats |= VIDEO_FORMAT_H265_REXT10_444; // 8bit performance degradation workaround
@@ -970,7 +1056,7 @@ static NSMutableSet* hostList;
             }
             // Fall-through
             
-        case CODEC_PREF_H264:
+        case TemporarySettingsCodecPreferenceH264:
             if (streamSettings.enableYUV444) {
                 _streamConfig.supportedVideoFormats |= VIDEO_FORMAT_H264_HIGH8_444;
             } else {
@@ -1026,45 +1112,71 @@ static NSMutableSet* hostList;
     // Exempt this host from discovery while handling the quit operation
     [self->_discMan pauseDiscoveryForHost:app.host];
     [hMan executeRequestSynchronously:quitRequest];
+    if (quitResponse.statusCode == 200 && [[[quitResponse getStringTag:@"cancel"] trim] isEqualToString:@"0"]) {
+        quitResponse.statusCode = 599;
+    }
     if (quitResponse.statusCode == 200) {
-        ServerInfoResponse* serverInfoResp = [[ServerInfoResponse alloc] init];
-        [hMan executeRequestSynchronously:[HttpRequest requestForResponse:serverInfoResp withUrlRequest:[hMan newServerInfoRequest:false]
-                                                            fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest]]];
-        if (![serverInfoResp isStatusOk] || [[serverInfoResp getStringTag:@"state"] hasSuffix:@"_SERVER_BUSY"]) {
-            // On newer GFE versions, the quit request succeeds even though the app doesn't
-            // really quit if another client tries to kill your app. We'll patch the response
-            // to look like the old error in that case, so the UI behaves.
-            quitResponse.statusCode = 599;
-        }
-        else if ([serverInfoResp isStatusOk]) {
-            // Update the host object with this info
-            [serverInfoResp populateHost:app.host];
+        // /cancel acknowledges the request before Sunshine finishes shutting down.
+        const dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, 12 * NSEC_PER_SEC);
+        const NSTimeInterval end = NSProcessInfo.processInfo.systemUptime + 12;
+        BOOL fastFail = NO;
+        for (;;) {
+            ServerInfoResponse *info = [[ServerInfoResponse alloc] init];
+            HttpRequest *request = [HttpRequest requestForResponse:info
+                                                  withUrlRequest:[hMan newServerInfoRequest:fastFail]
+                                                   fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest:fastFail]];
+            [hMan executeRequestSynchronously:request deadline:deadline];
+            NSString *state = [[info getStringTag:@"state"] trim];
+            if ([info isStatusOk] && state.length > @"_SERVER_FREE".length && [state hasSuffix:@"_SERVER_FREE"]) {
+                [info populateHost:app.host];
+                [self hostCardContentsDidChange:app.host];
+                break;
+            }
+            BOOL sunshineBusy = [info isStatusOk] && [state isEqualToString:@"SUNSHINE_SERVER_BUSY"];
+            if (([info isStatusOk] && [state hasSuffix:@"_SERVER_BUSY"] && !sunshineBusy) ||
+                (info.statusCode >= 400 && info.statusCode < 500) ||
+                (!sunshineBusy && app.host.isNvidiaServerSoftware)) {
+                quitResponse.statusCode = [info isStatusOk] ? 599 : info.statusCode;
+                quitResponse.statusMessage = info.statusMessage;
+                break;
+            }
+            if (NSProcessInfo.processInfo.systemUptime + 1 >= end) {
+                quitResponse.statusCode = NSURLErrorTimedOut;
+                quitResponse.statusMessage = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorTimedOut userInfo:nil].localizedDescription;
+                break;
+            }
+            [NSThread sleepForTimeInterval:1];
+            fastFail = YES;
         }
     }
     [self->_discMan resumeDiscoveryForHost:app.host];
     return quitResponse;
 }
 
-- (void)quitApp:(TemporaryApp* )app{
-    if(!app) return;
-    if(![PublicUtils hasNoPresentedVC:self]) return;
-    [self showLoadingFrame: ^{
+- (void)quitApp:(TemporaryApp *)app {
+    if (!app || ![PublicUtils hasNoPresentedVC:self]) return;
+    [self quitApp:app completion:^(BOOL success) {}];
+}
+
+- (void)quitApp:(TemporaryApp *)app completion:(void (^)(BOOL))completion {
+    if (!app) { completion(NO); return; }
+    [self showLoadingFrame:^{
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            HttpResponse* quitResponse = [self requestToQuitApp:app];
-            // If it fails, display an error and stop the current operation
-            if (quitResponse.statusCode != 200) {
-                UIAlertController* alert = [UIAlertController alertControllerWithTitle:[LocalizationHelper localizedStringForKey:@"Quitting App Failed"]
-                                                                               message:[LocalizationHelper localizedStringForKey:@"Failed to quit app. If this app was started by another device, you'll need to quit from that device."]
-                                                     preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:[LocalizationHelper localizedStringForKey:@"Ok"] style:UIAlertActionStyleDefault handler:nil]];
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self updateAppsForHost:app.host];
-                    [self hideLoadingFrame: ^{
+            HttpResponse *response = [self requestToQuitApp:app];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                BOOL success = response.statusCode == 200;
+                [self hideLoadingFrame:^{
+                    if (!success) {
+                        [self updateAppsForHost:app.host];
+                        NSString *message = response.statusCode == NSURLErrorTimedOut ? response.statusMessage :
+                            [LocalizationHelper localizedStringForKey:@"Failed to quit app. If this app was started by another device, you'll need to quit from that device."];
+                        UIAlertController *alert = [UIAlertController alertControllerWithTitle:[LocalizationHelper localizedStringForKey:@"Quitting App Failed"] message:message preferredStyle:UIAlertControllerStyleAlert];
+                        [alert addAction:[UIAlertAction actionWithTitle:[LocalizationHelper localizedStringForKey:@"Ok"] style:UIAlertActionStyleDefault handler:nil]];
                         [[self activeViewController] presentViewController:alert animated:YES completion:nil];
-                    }];
-                });
-            }
-            else dispatch_async(dispatch_get_main_queue(), ^{[self hideLoadingFrame:nil];});
+                    }
+                    completion(success);
+                }];
+            });
         });
     }];
 }
@@ -1074,40 +1186,9 @@ static NSMutableSet* hostList;
 }
 
 - (void)quitRunningAppAndStart:(TemporaryApp *)app {
-    TemporaryApp* currentRunningApp = [self findRunningApp:app.host];
-    [self showLoadingFrame: ^{
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            HttpResponse* quitResponse = [self requestToQuitApp:app];
-            // If it fails, display an error and stop the current operation
-            if (quitResponse.statusCode != 200) {
-                UIAlertController* alert = [UIAlertController alertControllerWithTitle:[LocalizationHelper localizedStringForKey:@"Quitting App Failed"]
-                                                                               message:[LocalizationHelper localizedStringForKey:@"Failed to quit app. If this app was started by another device, you'll need to quit from that device."]
-                                                     preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:[LocalizationHelper localizedStringForKey:@"Ok"] style:UIAlertActionStyleDefault handler:nil]];
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self updateAppsForHost:app.host];
-                    [self hideLoadingFrame: ^{
-                        [[self activeViewController] presentViewController:alert animated:YES completion:nil];
-                    }];
-                });
-            }
-            else {
-                app.host.currentGame = @"0";
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    // If it succeeds and we're to start streaming, segue to the stream
-                    if (![app.id isEqualToString:currentRunningApp.id]) {
-                        [self prepareToStreamApp:app];
-                        [self hideLoadingFrame: ^{
-                            [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
-                        }];
-                    }
-                    else {
-                        // Otherwise, just hide the loading icon
-                        [self hideLoadingFrame:nil];
-                    }
-                });
-            }
-        });
+    TemporaryApp *current = [self findRunningApp:app.host];
+    [self quitApp:app completion:^(BOOL success) {
+        if (success && ![app.id isEqualToString:current.id]) [self launchApp:app];
     }];
 }
 
@@ -1170,42 +1251,12 @@ static NSMutableSet* hostList;
         [alertController addAction:[UIAlertAction actionWithTitle:
                                     [app.id isEqualToString:currentApp.id] ? [LocalizationHelper localizedStringForKey:@"Quit App"] : [LocalizationHelper localizedStringForKey:@"Quit Running App and Start"] style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action){
                                         Log(LOG_I, @"Quitting application: %@", currentApp.name);
-                                        [self showLoadingFrame: ^{
-                                            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                                HttpResponse* quitResponse = [self requestToQuitApp:app];
-                                                // If it fails, display an error and stop the current operation
-                                                if (quitResponse.statusCode != 200) {
-                                                    UIAlertController* alert = [UIAlertController alertControllerWithTitle:[LocalizationHelper localizedStringForKey:@"Quitting App Failed"]
-                                                                                                                   message:[LocalizationHelper localizedStringForKey:@"Failed to quit app. If this app was started by another device, you'll need to quit from that device."]
-                                                                                         preferredStyle:UIAlertControllerStyleAlert];
-                                                    [alert addAction:[UIAlertAction actionWithTitle:[LocalizationHelper localizedStringForKey:@"Ok"] style:UIAlertActionStyleDefault handler:nil]];
-                                                    dispatch_async(dispatch_get_main_queue(), ^{
-                                                        [self updateAppsForHost:app.host];
-                                                        [self hideLoadingFrame: ^{
-                                                            [[self activeViewController] presentViewController:alert animated:YES completion:nil];
-                                                        }];
-                                                    });
-                                                }
-                                                else {
-                                                    app.host.currentGame = @"0";
-                                                    dispatch_async(dispatch_get_main_queue(), ^{
-                                                        // If it succeeds and we're to start streaming, segue to the stream
-                                                        if (![app.id isEqualToString:currentApp.id]) {
-                                                            [self prepareToStreamApp:app];
-                                                            [self hideLoadingFrame: ^{
-                                                                [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
-                                                            }];
-                                                        }
-                                                        else {
-                                                            // Otherwise, just hide the loading icon
-                                                            [self hideLoadingFrame:nil];
-                                                        }
-                                                    });
-                                                }
-                                            });
-                                        }];
-                                        
+                                        [self quitRunningAppAndStart:app];
                                     }]];
+    }
+
+    if (app.host && app.id.length > 0) {
+        [DeeplinkCoordinator addLinkActionTo:alertController presenter:self host:app.host appID:app.id];
     }
 
     if (currentApp == nil || ![app.id isEqualToString:currentApp.id] || app.hidden) {
@@ -1412,79 +1463,6 @@ static NSMutableSet* hostList;
             return;
         }
     }
-#if !TARGET_OS_TV
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.resolutionStack];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.fpsStack];
-    // [self.settingsViewController widget:self.settingsViewController.bitrateSlider setEnabled:!self.settingsExpandedInStreamView];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.optimizeGamesStack];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.audioOnPcStack];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.sdrPerformanceWorkaroundStack];
-    // [self.settingsViewController.touchModeSelector1 setEnabled:!_settingsExpandedInStreamView || !(self.settingsViewController.touchModeSelector1.selectedSegmentIndex == AbsoluteTouch && !self.settingsViewController.passthroughGesturesSwitch.isOn)];
-    // [self.settingsViewController.touchModeSelector2 setEnabled:self.settingsViewController.touchModeSelector1.enabled];
-    
-    [self.settingsViewController.codecSelector setEnabled:!_settingsExpandedInStreamView];
-    if(_settingsExpandedInStreamView){
-        [self.settingsViewController.yuv444Switch setEnabled:NO];
-        [self.settingsViewController.fullColorRangeSwitch setEnabled:NO];
-        [self.settingsViewController.hdrSwitch setEnabled:NO];
-    }
-    else [self.settingsViewController updateCodecDependentSwitches];
-    
-    [self.settingsViewController.gyroModeSelector setEnabled:!_settingsExpandedInStreamView || ![streamFrameViewController shallDisableGyroHotSwitch]];
-    [self.settingsViewController.emulatedControllerTypeSelector setEnabled:!_settingsExpandedInStreamView];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.citrixX1MouseStack];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.externalDisplayModeStack];
-    
-    if(self.settingsViewController.audioConfigSelector.numberOfSegments>2){
-        if(_settingsExpandedInStreamView){
-            if(self.settingsViewController.audioConfigSelector.selectedSegmentIndex>=2){
-                [self.settingsViewController.audioConfigSelector setEnabled:false];
-            }
-            else {
-                [self.settingsViewController.audioConfigSelector setEnabled:false forSegmentAtIndex:2];
-                [self.settingsViewController.audioConfigSelector setEnabled:false forSegmentAtIndex:3];
-            }
-        }
-        else{
-            [self.settingsViewController.audioConfigSelector setEnabled:true];
-            [self.settingsViewController.audioConfigSelector setEnabled:true forSegmentAtIndex:2];
-            [self.settingsViewController.audioConfigSelector setEnabled:true forSegmentAtIndex:3];
-        }
-    }
-    
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.duckOtherAppStack];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.pipStack];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView forStack:self.settingsViewController.appThemeStack];
-    [self.settingsViewController.renderingBackendSelector setEnabled:!_settingsExpandedInStreamView];
-    // Enable frame pacing mode selector only if not in stream view AND not in performance mode
-    BOOL shouldEnableFrameQueueSettings = !_settingsExpandedInStreamView && (self.settingsViewController.renderingBackendSelector.selectedSegmentIndex != RENDER_METAL);
-    // [self.settingsViewController.framePacingModeSelector setEnabled:shouldEnableFrameQueueSettings];
-    
-    if(self.settingsViewController.framePacingModeSelector.selectedSegmentIndex != FramePacingModeOff
-       && self.settingsViewController.framePacingModeSelector.selectedSegmentIndex != FramePacingModeLegacy) {
-        [self.settingsViewController.framePacingModeSelector setEnabled:!_settingsExpandedInStreamView forSegmentAtIndex:FramePacingModeOff];
-        [self.settingsViewController.framePacingModeSelector setEnabled:!_settingsExpandedInStreamView forSegmentAtIndex:FramePacingModeLegacy];
-    }
-    else [self.settingsViewController.framePacingModeSelector setEnabled:!_settingsExpandedInStreamView];
-    
-    if(FrameInterpolator.deviceSupportsInterpolation){
-        [self.settingsViewController.framePacingModeSelector setEnabled:_settingsViewController.framerateSelector.selectedSegmentIndex != _settingsViewController.framerateSelector.numberOfSegments-1
-         || !self.isStreaming forSegmentAtIndex:FramePacingModeInterpolation];
-    }
-
-    // [self.settingsViewController.frameTimebaseSwitch setEnabled:shouldEnableFramePacing];
-    [self.settingsViewController.asyncFrameDequeueSwitch setEnabled:shouldEnableFrameQueueSettings];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView || !(shouldEnableFrameQueueSettings && self.settingsViewController.framePacingModeSelector.selectedSegmentIndex == FramePacingModeQueue) forStack:self.settingsViewController.frameQueueSizeStack];
-    [self.settingsViewController setHidden:!(self.settingsViewController.framePacingModeSelector.selectedSegmentIndex == FramePacingModeInterpolation) forStack:self.settingsViewController.interpolationLevelStack];
-    [self.settingsViewController setHidden:_settingsExpandedInStreamView || !(self.settingsViewController.framePacingModeSelector.selectedSegmentIndex == FramePacingModeInterpolation) forStack:self.settingsViewController.streamDimensionScaleStack];
-
-    // Disable mic switch if sunshine does not support mic redirection
-    [self.settingsViewController.redirectMicSwitch setEnabled:!_settingsExpandedInStreamView||streamFrameViewController.micStreamInitialized];
-    if(_settingsExpandedInStreamView && !streamFrameViewController.micStreamInitialized) [self.settingsViewController.redirectMicSwitch setOn:false];
-    [self.settingsViewController setHidden:!self.settingsViewController.redirectMicSwitch.isOn forStack:self.settingsViewController.useBuiltinMicStack];
-    [self.settingsViewController.useBuiltinMicSwitch setEnabled:!_settingsExpandedInStreamView];
-    // [self.settingsViewController.passthroughGesturesSwitch setEnabled:!_settingsExpandedInStreamView];
-#endif
 }
 
 - (void)revealController:(SWRevealViewController *)revealController didMoveToPosition:(FrontViewPosition)position {
@@ -1533,10 +1511,160 @@ static NSMutableSet* hostList;
 
 - (void)adjustScrollViewForSafeArea:(UIScrollView*)view {
     if (@available(iOS 11.0, *)) {
-        if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-            view.contentInset = UIEdgeInsetsMake(0, 20, 0, 20);
+        BOOL needsHorizontalInset = self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20;
+#if !TARGET_OS_TV
+        if ((PublicUtils.isIPhone && !PublicUtils.isFoldableIPhone) ||
+            UIInterfaceOrientationIsPortrait([self appViewInterfaceOrientation])) {
+            // Make the compact portrait layout explicit, including on first entry.
+            needsHorizontalInset = YES;
+        }
+#endif
+        UIEdgeInsets insets = view.contentInset;
+        insets.left = insets.right = needsHorizontalInset ? 20 : 0;
+        if (!UIEdgeInsetsEqualToEdgeInsets(view.contentInset, insets)) {
+            view.contentInset = insets;
         }
     }
+}
+
+#if !TARGET_OS_TV
+- (UIInterfaceOrientation)appViewInterfaceOrientation {
+    if (@available(iOS 26.0, *)) {
+        return self.view.window.windowScene.effectiveGeometry.interfaceOrientation;
+    } else if (@available(iOS 13.0, *)) {
+        return self.view.window.windowScene.interfaceOrientation;
+    } else {
+        return UIApplication.sharedApplication.statusBarOrientation;
+    }
+}
+#endif
+
+- (void)constrainIPhoneAppViewToSafeArea {
+    /*
+    if(!PublicUtils.isIPhone) {
+        [self logAppCollectionLayout:@"skip-not-iphone"];
+        return;
+    }
+    if (self.collectionView == self.view || self.collectionView.superview != self.view) {
+        [self logAppCollectionLayout:@"skip-hierarchy"];
+        return;
+    } */
+    CGFloat horizontalInset = 0;
+    if (!PublicUtils.isFoldableIPhone) {
+#if !TARGET_OS_TV
+        UIInterfaceOrientation orientation = [self appViewInterfaceOrientation];
+        if (PublicUtils.isIPhone && UIInterfaceOrientationIsPortrait(orientation)) {
+            horizontalInset = [self appCollectionCellSize].width / 4.6;
+        } else
+#endif
+        {
+            // Ordinary iPhones return to their original full-width layout in landscape.
+            if (_appCollectionSafeAreaConstraints.count > 0) {
+                [NSLayoutConstraint deactivateConstraints:_appCollectionSafeAreaConstraints];
+                _appCollectionSafeAreaConstraints = nil;
+                self.collectionView.translatesAutoresizingMaskIntoConstraints = _appCollectionOriginalTranslatesAutoresizingMask;
+                self.collectionView.autoresizingMask = _appCollectionOriginalAutoresizingMask;
+                self.collectionView.frame = self.view.bounds;
+            }
+            // [self logAppCollectionLayout:@"skip-nonportrait"];
+            return;
+        }
+    }
+    // Removing the collection view on re-entry also removes its parent constraints.
+    // Reuse them while attached, and recreate them after the next mounting.
+    if (_appCollectionSafeAreaConstraints.count > 0 && _appCollectionSafeAreaConstraints.firstObject.active) {
+        if (_appCollectionSafeAreaConstraints[0].constant != horizontalInset) {
+            _appCollectionSafeAreaConstraints[0].constant = horizontalInset;
+        }
+        if (_appCollectionSafeAreaConstraints[1].constant != -horizontalInset) {
+            _appCollectionSafeAreaConstraints[1].constant = -horizontalInset;
+        }
+        // [self logAppCollectionLayout:@"constraints-updated"];
+        return;
+    }
+    if (_appCollectionSafeAreaConstraints.count == 0) {
+        _appCollectionOriginalAutoresizingMask = self.collectionView.autoresizingMask;
+        _appCollectionOriginalTranslatesAutoresizingMask = self.collectionView.translatesAutoresizingMaskIntoConstraints;
+    }
+    [NSLayoutConstraint deactivateConstraints:_appCollectionSafeAreaConstraints ?: @[]];
+    self.collectionView.translatesAutoresizingMaskIntoConstraints = NO;
+    _appCollectionSafeAreaConstraints = @[
+        [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:horizontalInset],
+        [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-horizontalInset],
+        [self.collectionView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ];
+    [NSLayoutConstraint activateConstraints:_appCollectionSafeAreaConstraints];
+    // [self logAppCollectionLayout:@"constraints-created"];
+}
+
+/*
+- (void)logAppCollectionLayout:(NSString *)phase {
+#if DEBUG && !TARGET_OS_TV
+    // On by default for this investigation. Disable with launch arguments:
+    // -VLAppCollectionLayoutDiagnostics NO
+    NSNumber *enabled = [NSUserDefaults.standardUserDefaults objectForKey:@"VLAppCollectionLayoutDiagnostics"];
+    if (enabled != nil && !enabled.boolValue) { return; }
+    UIWindow *window = self.viewIfLoaded.window;
+    UIInterfaceOrientation orientation = UIInterfaceOrientationUnknown;
+    UIInterfaceOrientation legacyOrientation = UIInterfaceOrientationUnknown;
+    if (@available(iOS 13.0, *)) {
+        legacyOrientation = window.windowScene.interfaceOrientation;
+        orientation = legacyOrientation;
+    }
+    if (@available(iOS 26.0, *)) {
+        orientation = window.windowScene.effectiveGeometry.interfaceOrientation;
+    }
+    NSUInteger activeConstraints = 0;
+    for (NSLayoutConstraint *constraint in _appCollectionSafeAreaConstraints) {
+        if (constraint.active) { activeConstraints++; }
+    }
+    UICollectionViewCell *visibleCell = self.collectionView.visibleCells.firstObject;
+    NSString *state = [NSString stringWithFormat:
+        @"iOS=%@ main=%d phone=%d fold=%d entered=%d hidden=%d orientation=%ld legacy=%ld "
+         "view=%@ parent=%@ sameView=%d window=%@ viewBounds=%@ safe=%@ "
+         "collectionFrame=%@ collectionBounds=%@ insets=%@ adjustedInsets=%@ "
+         "constraints=%lu/%lu left=%.3f right=%.3f translates=%d ambiguous=%d "
+         "apps=%lu expectedCardWidth=%.3f visibleCellFrame=%@",
+        UIDevice.currentDevice.systemVersion, NSThread.isMainThread, PublicUtils.isIPhone,
+        PublicUtils.isFoldableIPhone, _enteredAppView, self.collectionView.hidden,
+        (long)orientation, (long)legacyOrientation,
+        NSStringFromClass(self.view.class), NSStringFromClass(self.collectionView.superview.class),
+        self.collectionView == self.view, NSStringFromCGRect(window.bounds),
+        NSStringFromCGRect(self.view.bounds), NSStringFromCGRect(self.view.safeAreaLayoutGuide.layoutFrame),
+        NSStringFromCGRect(self.collectionView.frame), NSStringFromCGRect(self.collectionView.bounds),
+        NSStringFromUIEdgeInsets(self.collectionView.contentInset),
+        NSStringFromUIEdgeInsets(self.collectionView.adjustedContentInset),
+        (unsigned long)activeConstraints, (unsigned long)_appCollectionSafeAreaConstraints.count,
+        _appCollectionSafeAreaConstraints.firstObject.constant,
+        _appCollectionSafeAreaConstraints.count > 1 ? _appCollectionSafeAreaConstraints[1].constant : 0,
+        self.collectionView.translatesAutoresizingMaskIntoConstraints, self.collectionView.hasAmbiguousLayout,
+        (unsigned long)self.sortedAppList.count, [self appCollectionCellSize].width,
+        NSStringFromCGRect(visibleCell.frame)];
+    if ([_appCollectionLayoutDiagnosticStates[phase] isEqualToString:state]) { return; }
+    if (_appCollectionLayoutDiagnosticStates == nil) {
+        _appCollectionLayoutDiagnosticStates = [NSMutableDictionary dictionary];
+    }
+    _appCollectionLayoutDiagnosticStates[phase] = state;
+    NSLog(@"[AppCollectionLayout] %@ %@", phase, state);
+#endif
+}
+ */
+
+- (void)refreshAppCollectionLayout {
+    /*
+    if (!PublicUtils.isIPhone || self.collectionView.superview != self.view) {
+        [self logAppCollectionLayout:@"refresh-skipped"];
+        return;
+    } */
+    [self constrainIPhoneAppViewToSafeArea];
+    [self adjustScrollViewForSafeArea:self.collectionView];
+    // Resolve the collection's new bounds before preparing its cell positions.
+    [self.view setNeedsLayout];
+    [self.view layoutIfNeeded];
+    [self.collectionView.collectionViewLayout invalidateLayout];
+    [self.collectionView layoutIfNeeded];
+    // [self logAppCollectionLayout:@"refresh-completed"];
 }
 
 // Adjust the subviews for the safe area on the iPhone X.
@@ -1599,6 +1727,7 @@ static NSMutableSet* hostList;
 }
 
 - (BOOL)needPopupAboutView {
+    if(PublicUtils.isTVOS) return false;
     // NSString *key = @"appHasLaunchedBefore";
     NSString *key = @"needPopupAboutView20260215";
     BOOL keyExists = [[NSUserDefaults standardUserDefaults] boolForKey:key];
@@ -1614,8 +1743,8 @@ static NSMutableSet* hostList;
 
 - (bool)isIPhonePortrait{
     bool isIPhone = ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPhone);
-    CGFloat screenHeightInPoints = CGRectGetHeight([[UIScreen mainScreen] bounds]);
-    CGFloat screenWidthInPoints = CGRectGetWidth([[UIScreen mainScreen] bounds]);
+    CGFloat screenHeightInPoints = CGRectGetHeight([[PublicUtils screenForView:self.viewIfLoaded] bounds]);
+    CGFloat screenWidthInPoints = CGRectGetWidth([[PublicUtils screenForView:self.viewIfLoaded] bounds]);
     bool isPortrait = screenHeightInPoints > screenWidthInPoints;
     return isIPhone && isPortrait;
    // return isPortrait;
@@ -1908,6 +2037,8 @@ static NSMutableSet* hostList;
             [_profilesButton setImage:image];
             _profilesButton.imageInsets = UIEdgeInsetsMake(-1.5, 0, -1.5, 0);
             _profilesButton.tintColor = ThemeManager.appPrimaryColor;
+            _profilesButtonUsesCompactSymbol = NO;
+            [self updateLegacyCompactProfilesNavigationIcon];
         }
         
     } else {
@@ -1996,6 +2127,25 @@ static NSMutableSet* hostList;
     }
 }
 
+- (void)updateLegacyCompactProfilesNavigationIcon {
+    if (PublicUtils.iOS18Available || !_profilesButton) return;
+    BOOL compact = [PublicUtils isCompactNavigationBar:self.navigationController.navigationBar];
+    if (_profilesButtonUsesCompactSymbol == compact) return;
+    _profilesButtonUsesCompactSymbol = compact;
+
+    UIImage *image;
+    if (compact) {
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration
+            configurationWithPointSize:18 weight:UIImageSymbolWeightRegular];
+        image = [UIImage systemImageNamed:@"gamecontroller.fill" withConfiguration:config];
+        _profilesButton.imageInsets = UIEdgeInsetsZero;
+    } else {
+        image = [UIImage imageNamed:@"gamecontroller.circle.regular"];
+        _profilesButton.imageInsets = UIEdgeInsetsMake(-1.5, 0, -1.5, 0);
+    }
+    _profilesButton.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
 // Called when the system's theme (light/dark mode) changes
 // will not be active if the app is streaming
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
@@ -2008,63 +2158,6 @@ static NSMutableSet* hostList;
             [ThemeManager systemUserInterfaceStyleDidChange:self.traitCollection.userInterfaceStyle];
         }
     }
-}
-
-- (void)changeDefaultSettings{
-    if(![GenericUtils needUpdateDefaultSettings]) return;
-    DataManager* dataMan = [[DataManager alloc] init];
-    Settings* settings = [dataMan retrieveSettings];
-    
-    settings.preferredCodec = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? CODEC_PREF_HEVC : CODEC_PREF_H264;
-    
-    switch ([UIDevice currentDevice].userInterfaceIdiom) {
-        case UIUserInterfaceIdiomPhone:
-            settings.sdrPerformanceWorkaround = true;
-            settings.framePacingMode = @(FramePacingModeQueue);
-            settings.asyncFrameDequeue = false;
-            settings.touchMoveEventInterval = @(0);
-            break;
-        case UIUserInterfaceIdiomPad:
-        default:
-            settings.sdrPerformanceWorkaround = true;
-            settings.framePacingMode = @(FramePacingModeQueue);
-            if([UIScreen mainScreen].maximumFramesPerSecond > 110) settings.asyncFrameDequeue = false;
-            if([UIScreen mainScreen].maximumFramesPerSecond < 65) settings.asyncFrameDequeue = false;
-            break;
-    }
-    
-    if([UIScreen mainScreen].maximumFramesPerSecond > 110) settings.framerate = @(120);
-    if([UIScreen mainScreen].maximumFramesPerSecond < 65) settings.framerate = @(60);
-
-    // if([UIScreen mainScreen].maximumFramesPerSecond < 65) settings.touchMoveEventInterval = @(60);
-    settings.onscreenControls = @(OnScreenControlsLevelCustom);
-    settings.pencilTickIntervalUs = @(1750);
-    settings.pencilTipOffsetX = @(0);
-    settings.pencilTipOffsetY = @(0);
-    settings.oscLayoutToolFingers = @(99);
-    settings.keyboardToggleFingers = @(99);
-
-    [dataMan saveData];
-}
-
-- (void)updatePartialSettings{
-    if(![GenericUtils needUpdatePartialSettings]) return;
-    DataManager* dataMan = [[DataManager alloc] init];
-    Settings* settings = [dataMan retrieveSettings];
-    settings.touchMoveEventInterval = @(0);
-    settings.localMousePointerMode = @(0);
-    
-    settings.controllerMouseStick = @(ControllerElementRightStick);
-    settings.controllerMouseLeftButton = @(ControllerElementDpadRight);
-    settings.controllerMouseRightButton = @(ControllerElementDpadUp);
-    settings.controllerMouseExpo = @(1.8);
-    settings.controllerMousePointerVelocity = @(15.0);
-    
-    settings.asyncFrameDequeue = PublicUtils.isTVOS || PublicUtils.refreshRate > 100.0;
-
-    if (@available(iOS 14.0, tvOS 14.0, *)) nil;
-    else settings.appTheme = @(UIUserInterfaceStyleDark);
-    [dataMan saveData];
 }
 
 - (void)viewDidLoad{
@@ -2116,6 +2209,10 @@ static NSMutableSet* hostList;
     }
     
     _boxArtCache = [[NSCache alloc] init];
+    _boxArtCache.totalCostLimit = 32 * 1024 * 1024;
+    _boxArtQueue = [[NSOperationQueue alloc] init];
+    _boxArtQueue.maxConcurrentOperationCount = 2;
+    _boxArtQueue.qualityOfService = NSQualityOfServiceUtility;
 
 
     self.collectionView.delaysContentTouches = NO;
@@ -2180,8 +2277,6 @@ static NSMutableSet* hostList;
     
     [self prewarmSoftKeyboard];
         
-    [self changeDefaultSettings];
-    [self updatePartialSettings];
     
     [IAPManager.shared fetchProducts];
     [GenericUtils handleAddOnProductPurchaseIntentFor:AddOnProductPencilProPack];
@@ -2210,6 +2305,7 @@ static NSMutableSet* hostList;
 }
 
 - (void)prewarmSoftKeyboard {
+    if(PublicUtils.isTVOS) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         UITextField *tf = [[UITextField alloc] initWithFrame:CGRectZero];
         tf.hidden = YES;
@@ -2222,22 +2318,22 @@ static NSMutableSet* hostList;
 
 -(void)viewDidLayoutSubviews{
     [super viewDidLayoutSubviews];
+    [self constrainIPhoneAppViewToSafeArea];
+    // [self logAppCollectionLayout:@"parent-layout-completed"];
+    [self updateLegacyCompactProfilesNavigationIcon];
     [self updateHosts];
     // if (@available(iOS 13.0, *)) [GamepadNavigationIllustrationHud showInKeyWindow];
 }
 
-// this will also be called back when device orientation changes
-//- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
-//    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
-//    
-//    double delayInSeconds = 0.7;
-//    // Convert the delay into a dispatch_time_t value
-//    dispatch_time_t delayTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
-//    // Perform some task after the delay
-//    dispatch_after(delayTime, dispatch_get_main_queue(), ^{// Code to execute after the delay
-//        [self updateResolutionAccordingly];
-//    });
-//}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    if (!PublicUtils.isIPhone || PublicUtils.isFoldableIPhone) { return; }
+    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        [self refreshAppCollectionLayout];
+    } completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        [self refreshAppCollectionLayout];
+    }];
+}
 
 -(void) fillResolutionTable:(CMVideoDimensions *)resolutionTable externalDisplayMode:(NSInteger)externalDisplayMode{
     UIWindow *window = self.view.window;
@@ -2402,6 +2498,7 @@ static NSMutableSet* hostList;
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:NO];
+    [self refreshAppCollectionLayout];
 
     _viewJustAppeared = true;
 
@@ -2416,8 +2513,15 @@ static NSMutableSet* hostList;
     
     [[self revealViewController] setPrimaryViewController:self];
     self.revealViewController.isStreaming = false; // tell the revealViewController streaming is finished
+    [self.hostCollectionVC refreshVisibleHostCards];
+    if (@available(iOS 13.0, *)) {
+        if (ControllerNavigator.uiNavigationDelegate == self ||
+            ControllerNavigator.uiNavigationDelegate == self.hostCollectionVC) {
+            [ControllerNavigator restoreUINavigationHighlight];
+        }
+    }
     //[self.settingsButton setEnabled:![self isIPhonePortrait]]; //make sure settings button is disabled in iphone portrait mode.
-    //recordedScreenWidth = CGRectGetWidth([[UIScreen mainScreen] bounds]); // Get the screen's bounds (in points), update recorded screen width
+    //recordedScreenWidth = CGRectGetWidth([[PublicUtils screenForView:self.viewIfLoaded] bounds]); // Get the screen's bounds (in points), update recorded screen width
 // #endif
     
     [self.navigationController setNavigationBarHidden:NO animated:NO];
@@ -2466,12 +2570,22 @@ static NSMutableSet* hostList;
         ControllerNavigator.controllerMouseRightButton = (ControllerElement)settings.controllerMouseRightButton.intValue;
         ControllerNavigator.controllerMouseExpo = settings.controllerMouseExpo.floatValue;
         if(ControllerNavigator.enabled) [ControllerNavigator start];
-
     }
+    
+    [self.deeplinkCoordinator mainFrameDidAppear];
+    
+#if !TARGET_OS_TV
+    if(!self.presentedViewController) {
+        [GenericUtils handleBarrelRollRedminderIn:self];
+    }
+#else
+    [ControllerUtil handleGameControllerRequiredTipIn:self delay:1];
+#endif
 }
 
 - (void)viewWillDisappear:(BOOL)animated{
     [super viewWillDisappear:animated];
+    [_deeplinkCoordinator viewWillLeave];
     [_foregroundHostUpdateTimer invalidate];
     _foregroundHostUpdateTimer = nil;
 }
@@ -2480,11 +2594,9 @@ static NSMutableSet* hostList;
 {
     [super viewWillAppear:NO];
 
-#if TARGET_OS_TV
     // StreamFrameViewController hides the navigation bar. Restore it before
     // rebuilding the collection views so their first layout uses final safe-area geometry.
     [self.navigationController setNavigationBarHidden:NO animated:NO];
-#endif
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(updateTheme)
@@ -2512,6 +2624,7 @@ static NSMutableSet* hostList;
     // for that which would normally fire beginForegroundRefresh.
     
     [self.view addSubview:self.collectionView];
+    [self constrainIPhoneAppViewToSafeArea];
     [self initHostCollection];
     if(!_enteredAppView) [self switchToHostView];
     else if (@available(iOS 13.0, *)) [ControllerNavigator setUINavigationDelegate:self];
@@ -2558,6 +2671,14 @@ static NSMutableSet* hostList;
             }
         }
     }
+}
+
+- (void) hostCardContentsDidChange:(TemporaryHost*)host {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![self isStreaming]) {
+            [self.hostCollectionVC refreshHostCardForHost:host];
+        }
+    });
 }
 
 - (void) updateAllHosts:(NSArray *)hosts {
@@ -2613,9 +2734,11 @@ static NSMutableSet* hostList;
 
             // Start jobs to decode the box art in advance
             for (TemporaryApp* app in comp.appList) {
-                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-                    [self updateBoxArtCacheForApp:app];
-                });
+                [_boxArtQueue addOperationWithBlock:^{
+                    @autoreleasepool {
+                        [self updateBoxArtCacheForApp:app];
+                    }
+                }];
             }
         }
     }
@@ -2630,47 +2753,13 @@ static NSMutableSet* hostList;
     [_discMan resetDiscoveryState];
 }
 
-+ (UIImage*) loadBoxArtForCaching:(TemporaryApp*)app {
-    UIImage* boxArt;
-    
-    NSData* imageData = [NSData dataWithContentsOfFile:[AppAssetManager boxArtPathForApp:app]];
-    if (imageData == nil) {
-        // No box art on disk
-        return nil;
-    }
-    
-    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)imageData, NULL);
-    CGImageRef cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil);
-    
-    size_t width = CGImageGetWidth(cgImage);
-    size_t height = CGImageGetHeight(cgImage);
-    
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef imageContext =  CGBitmapContextCreate(NULL, width, height, 8, width * 4, colorSpace,
-                                                       kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-    CGColorSpaceRelease(colorSpace);
-
-    CGContextDrawImage(imageContext, CGRectMake(0, 0, width, height), cgImage);
-    
-    CGImageRef outputImage = CGBitmapContextCreateImage(imageContext);
-
-    boxArt = [UIImage imageWithCGImage:outputImage];
-    
-    CGImageRelease(outputImage);
-    CGContextRelease(imageContext);
-    
-    CGImageRelease(cgImage);
-    CFRelease(source);
-    
-    return boxArt;
-}
-
 - (void) updateBoxArtCacheForApp:(TemporaryApp*)app {
     if ([_boxArtCache objectForKey:app] == nil) {
-        UIImage* image = [MainFrameViewController loadBoxArtForCaching:app];
+        UIImage* image = [AppAssetManager loadBoxArtForApp:app];
         if (image != nil) {
             // Add the image to our cache if it was present
-            [_boxArtCache setObject:image forKey:app];
+            [_boxArtCache setObject:image forKey:app
+                               cost:CGImageGetBytesPerRow(image.CGImage) * CGImageGetHeight(image.CGImage)];
         }
     }
 }
@@ -2695,6 +2784,16 @@ static NSMutableSet* hostList;
     }
 
     [self.collectionView reloadData];
+    [self refreshAppCollectionLayout];
+    [self refreshAppNavigationHighlight];
+}
+
+- (void)refreshAppNavigationHighlight {
+    if (@available(iOS 13.0, *)) {
+        if (ControllerNavigator.uiNavigationDelegate == self) {
+            [ControllerNavigator restoreUINavigationHighlight];
+        }
+    }
 }
 
 - (bool)isInAppView{
@@ -2738,21 +2837,27 @@ static NSMutableSet* hostList;
     return cell;
 }
 
+- (void)collectionView:(UICollectionView*)collectionView willDisplayCell:(UICollectionViewCell*)cell forItemAtIndexPath:(NSIndexPath*)indexPath {
+    if (@available(iOS 13.0, *)) {
+        [self applyAppNavigationHighlightToCell:cell atIndexPath:indexPath];
+    }
+}
+
+- (CGSize)appCollectionCellSize {
+    CGSize cellSize;
+    UIScreen* referenceScreen = PublicUtils.isFoldableRAMCached ? UIScreen.screens.firstObject : [PublicUtils screenForView:self.viewIfLoaded];
+    CGRect referenceBounds = [referenceScreen bounds];
+    if(PublicUtils.isFoldableRAMCached || PublicUtils.isIPhone) cellSize.height = 0.365*MIN(referenceBounds.size.height,referenceBounds.size.width);
+    else cellSize.height = 0.272*MIN(referenceBounds.size.height,referenceBounds.size.width);
+    CGSize defaultSize = UIAppView.defaultSize;
+    cellSize.width = cellSize.height * defaultSize.width / defaultSize.height;
+    return cellSize;
+}
+
 - (CGSize)collectionView:(UICollectionView *)collectionView
                   layout:(UICollectionViewLayout *)collectionViewLayout
   sizeForItemAtIndexPath:(NSIndexPath *)indexPath {
-    CGSize cellSize;
-    if(PublicUtils.isIPhone) cellSize.height = 0.365*MIN(CGRectGetHeight([[UIScreen mainScreen] bounds]),CGRectGetWidth([[UIScreen mainScreen] bounds]));
-    else cellSize.height = 0.272*MIN(CGRectGetHeight([[UIScreen mainScreen] bounds]),CGRectGetWidth([[UIScreen mainScreen] bounds]));
-    TemporaryApp* app = self.sortedAppList[indexPath.row];
-    UIAppView* appView = [[UIAppView alloc] initWithApp:app cache:_boxArtCache andCallback:self];
-
-    cellSize.width = cellSize.height * (appView
-                                        .bounds.size.width/appView
-                                        .bounds.size.height);
-    // cardSize.width =
-    
-    return cellSize;
+    return [self appCollectionCellSize];
 }
 
 - (NSInteger)numberOfSectionsInCollectionView:(UICollectionView *)collectionView {
@@ -2796,8 +2901,8 @@ static NSMutableSet* hostList;
 - (void)handleMenuResize:(UILongPressGestureRecognizer *)gesture {
     CGPoint locationInView = [gesture locationInView:self.view];
     CGPoint locationInSuperView = [gesture locationInView:self.revealViewController.view];
-    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-    CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+    CGFloat screenHeight = [PublicUtils screenForView:self.viewIfLoaded].bounds.size.height;
+    CGFloat screenWidth = [PublicUtils screenForView:self.viewIfLoaded].bounds.size.width;
 
     menuSeparator = [self findMenuSeparator];
     if(menuSeparator.hidden || menuSeparator == nil) return;
@@ -2806,7 +2911,7 @@ static NSMutableSet* hostList;
         if(locationInView.x < 30) {
             snapshot = [[UIView alloc] init];
             snapshot.backgroundColor = [UIColor systemBlueColor];
-            screenHeight = [UIScreen mainScreen].bounds.size.height;
+            screenHeight = [PublicUtils screenForView:self.viewIfLoaded].bounds.size.height;
             snapshot.frame = CGRectMake(locationInSuperView.x,0, 2, screenHeight);
             [self.revealViewController.view addSubview:snapshot];
         }
@@ -2842,17 +2947,7 @@ static NSMutableSet* hostList;
         [dataMan saveData];
 
 
-        if (@available(iOS 14.0, *)) {
-            if (self.settingsViewController.usesSwiftUISettings) return;
-        }
-        
-#if !TARGET_OS_TV
-        double delayInSeconds = 0.02;
-        dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
-        dispatch_after(popTime, dispatch_get_main_queue(), ^{
-            [self.settingsViewController hideDynamicLabelsWhenOverlapped:self.settingsViewController.parentStack];
-        });
-#endif
+
     }
 }
 
@@ -2932,8 +3027,10 @@ static NSMutableSet* hostList;
 
 - (CGSize)getHostCardSize{
     CGSize cardSize;
-    if(PublicUtils.isIPhone) cardSize.height = 0.37*MIN(CGRectGetHeight([[UIScreen mainScreen] bounds]),CGRectGetWidth([[UIScreen mainScreen] bounds]));
-    else cardSize.height = 0.25*MIN(CGRectGetHeight([[UIScreen mainScreen] bounds]),CGRectGetWidth([[UIScreen mainScreen] bounds]));
+    UIScreen* referenceScreen = PublicUtils.isFoldableRAMCached ? UIScreen.screens.firstObject : [PublicUtils screenForView:self.viewIfLoaded];
+    CGRect referenceBounds = [referenceScreen bounds];
+    if(PublicUtils.isFoldableRAMCached || PublicUtils.isIPhone) cardSize.height = 0.37*MIN(referenceBounds.size.width, referenceBounds.size.height);
+    else cardSize.height = 0.25*MIN(referenceBounds.size.width, referenceBounds.size.height);
     TemporaryHost* dummyHost = [[TemporaryHost alloc] init];
     HostCardView* dummyCard = [[HostCardView alloc] initWithHost:dummyHost];
     cardSize.width = cardSize.height * (dummyCard.size.width/dummyCard.size.height);
@@ -2944,6 +3041,7 @@ static NSMutableSet* hostList;
 - (void)initHostCollection{
     // 初始化 HostCollectionViewController
     self.hostCollectionVC = [[HostCollectionViewController alloc] init];
+    self.hostCollectionVC.deeplinkCoordinator = self.deeplinkCoordinator;
     self.hostCollectionVC.cellSize = [self getHostCardSize];
     self.hostCollectionVC.interItemMinimumSpacing = 25;
     self.hostCollectionVC.minimumLineSpacing = PublicUtils.isTVOS ? 49 : 25;
@@ -2953,11 +3051,16 @@ static NSMutableSet* hostList;
     if(self.hostCollectionVC.view.superview == nil){
         [self.view addSubview:self.hostCollectionVC.view];
         CGFloat leftPadding = PublicUtils.isIPhone ? 30 : 0;
+        CGFloat rightPadding = 0;
+        if(PublicUtils.isFoldableIPhone) {
+            leftPadding = 15;
+            rightPadding = -15;
+        }
         self.hostCollectionVC.view.translatesAutoresizingMaskIntoConstraints = NO;
         [NSLayoutConstraint activateConstraints:@[
             [self.hostCollectionVC.view.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:0],
             [self.hostCollectionVC.view.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:leftPadding],
-            [self.hostCollectionVC.view.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:0],
+            [self.hostCollectionVC.view.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:rightPadding],
         ]];
     }
     

@@ -1337,16 +1337,24 @@ import UIKit
             if #available(iOS 13.0, *) {
                 ControllerNavigator.stop()
             }
+            
+            if PublicUtils.isTVOS {
+                handleGameControllerRequiredTip(in: ControllerUtil.delegate as? UIViewController)
+            }
+            
             return
         }
         
+        /*
         if PublicUtils.isTVOS {
             guard GCController.controllers().count == 1
                     || GCController.controllers().count == 2 else { return }
         }
         else {
             guard GCController.controllers().count == 1 else { return }
-        }
+        } */
+        
+        guard GCController.controllers().filter({$0.extendedGamepad != nil}).count == 1 else {return}
         
         if let mainFrameVC = delegate as? MainFrameViewController {
             let vc = mainFrameVC.isStreaming() ? StreamFrameViewController.sharedInstance() : mainFrameVC
@@ -1444,12 +1452,34 @@ import UIKit
         }
     }
     
+    @objc static func clearPrimaryControllerButtonHandler(_ button: ControllerElement, ignoreSwapABXY: Bool = true){
+        if var elementMap = ControllerUtil.primaryControllerElementMap {
+            if ignoreSwapABXY {
+                elementMap[.a] = ControllerUtil.primaryGCController?.extendedGamepad?.buttonA
+                elementMap[.b] = ControllerUtil.primaryGCController?.extendedGamepad?.buttonB
+                elementMap[.x] = ControllerUtil.primaryGCController?.extendedGamepad?.buttonX
+                elementMap[.y] = ControllerUtil.primaryGCController?.extendedGamepad?.buttonY
+            }
+            if let gcButton = elementMap[button] as? GCControllerButtonInput {
+                gcButton.pressedChangedHandler = nil
+            }
+        }
+    }
+    
     @objc static func listenPrimaryControllerStick(_ stick: ControllerElement, handler: @escaping (_ offsetVector: CGVector) -> Void){
         if let elementMap = ControllerUtil.primaryControllerElementMap {
             if let gcStick = elementMap[stick] as? GCControllerDirectionPad {
                 gcStick.valueChangedHandler = { _, xValue, yValue in
                     handler(CGVector(dx: CGFloat(xValue), dy: CGFloat(yValue)))
                 }
+            }
+        }
+    }
+    
+    @objc static func clearPrimaryControllerStickHandler(_ stick: ControllerElement){
+        if let elementMap = ControllerUtil.primaryControllerElementMap {
+            if let gcStick = elementMap[stick] as? GCControllerDirectionPad {
+                gcStick.valueChangedHandler = nil
             }
         }
     }
@@ -1680,7 +1710,38 @@ import UIKit
         let circulatedY = targetHypot*(offsetVector.dy/vectorHypot)
         return CGVector(dx: circulatedX, dy: circulatedY)
     }
+    
+    // MARK: - tvOS controller tip
+    @objc public static func handleGameControllerRequiredTip(in vc: UIViewController?, delay:TimeInterval = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            let controllers = GCController.controllers().filter({ $0.extendedGamepad != nil })
+            let sideControllers = GCController.controllers().filter({ $0.microGamepad != nil })
+            if controllers.count == 0 {
+                AlertControllerUtil.showAlert(
+                    in: vc,
+                    title: "Waiting for Game Controller ...".localized,
+                    message: "gameControllerRequiredTip".localized,
+                    withCancel: false,
+                    buttonTitle: sideControllers.count == 0 ? "Press  🖥️  to quit app".localized : "Press ‹ to quit app".localized,
+                    countdown: 0,
+                    action: {
+                        for controller in GCController.controllers() {
+                            if let gamepad = controller.microGamepad, controller.extendedGamepad == nil {
+                                disableSysGestures(controller)
+                                gamepad.buttonMenu.pressedChangedHandler = { _, _, pressed in // will be replace by prepareSideController
+                                    guard !pressed else { return }
+                                    exit(0)
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
 }
+
+
 
 #if os(iOS) && !VOIDLINK_PREVIEW
 @available(iOS 14.0, *)

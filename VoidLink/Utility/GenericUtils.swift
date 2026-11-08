@@ -135,10 +135,48 @@ import UIKit
         )
     }
 
+    @objc public static func handleFirstTappingPushToTalk(in vc: UIViewController?) {
+        DispatchQueue.main.async {
+            let key = "isFirstTappingPushToTalk"
+            guard !UserDefaults.standard.bool(forKey: key) else {
+                return
+            }
+            UserDefaults.standard.set(true, forKey: key)
+
+            AlertControllerUtil.showAlert(
+                in: vc,
+                title: LocalizationHelper.localizedString(forKey: "Voice Capture Mode"),
+                message: LocalizationHelper.localizedString(forKey: "firstTappingPushToTalkTip"),
+                withCancel: false,
+                buttonTitle: LocalizationHelper.localizedString(forKey: "Got it!"),
+                countdown: 6
+            )
+        }
+    }
+    
+    @objc public static func handleFirstReversingBarrelRoll(in vc: UIViewController?) {
+        DispatchQueue.main.async {
+            let key = "isFirstReversingBarrelRoll"
+            guard !UserDefaults.standard.bool(forKey: key) else {
+                return
+            }
+            UserDefaults.standard.set(true, forKey: key)
+
+            AlertControllerUtil.showAlert(
+                in: vc,
+                title: LocalizationHelper.localizedString(forKey: "Tips"),
+                message: LocalizationHelper.localizedString(forKey: "reverseBarrelRollStackTip"),
+                withCancel: false,
+                buttonTitle: LocalizationHelper.localizedString(forKey: "Got it!"),
+                countdown: 6
+            )
+        }
+    }
         
     @objc public static func needUpdateDefaultSettings() -> Bool {
         // let key = "needUpdateDefaultSettings20260226-1"
-        let key = "needUpdateDefaultSettings20260408-3"
+        // let key = "needUpdateDefaultSettings20260408-3"
+        let key = "needUpdateDefaultSettings20261103"
         guard !UserDefaults.standard.bool(forKey: key) else {
             return false
         }
@@ -149,7 +187,8 @@ import UIKit
     @objc public static func needUpdatePartialSettings() -> Bool {
         // let key = "needUpdateDefaultSettings20260226-1"
         // let key = "needUpdatePartialSettings20260620"
-        let key = "needUpdatePartialSettings20260801"
+        // let key = "needUpdatePartialSettings20260801"
+        let key = "needUpdatePartialSettings20261103"
         guard !UserDefaults.standard.bool(forKey: key) else {
             return false
         }
@@ -547,7 +586,13 @@ import UIKit
     }
     
     @objc public static func handleFirstGamepadConnection(in vc: UIViewController?,with controller: GCController, handler: @escaping () -> Void) {
-        
+        if PublicUtils.isTVOS {
+            AlertControllerUtil.alertController.dismiss(animated: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                ControllerNavigator.uiNavigationDelegate?.restoreControllerNavigationHighlight()
+            }
+        }
+
         if isFirstConnectingG8PlusMFi(controller) {
             AlertControllerUtil.showAlert(
                 in: vc,
@@ -613,6 +658,31 @@ import UIKit
             )
         }
     }
+    
+    @objc public static func handleFirstSettingNativeTrackpad(in vc: UIViewController?) {
+        DispatchQueue.main.async {
+            let key = "isFirstSettingNativeTrackpad3"
+            guard !UserDefaults.standard.bool(forKey: key) else {
+                return
+            }
+            UserDefaults.standard.set(true, forKey: key)
+
+            AlertControllerUtil.showAlert(
+                in: vc,
+                title: LocalizationHelper.localizedString(forKey: "Tips"),
+                message: LocalizationHelper.localizedString(forKey: "nativeTrackpadTip"),
+                withCancel: true,
+                buttonTitle: LocalizationHelper.localizedString(forKey: "Learn More"),
+                countdown: 0,
+                completion: {
+                    if !AlertControllerUtil.actionCancelled {
+                        PublicUtils.openUrl("nativeTrackpadHostLink".localized)
+                    }
+                }
+            )
+        }
+    }
+
 
     @objc public static func isFirstOpeningNewToolbox() -> Bool {
         let key = "isFirstOpeningNewToolbox6"
@@ -701,7 +771,135 @@ import UIKit
         }
     }
     
+    /// Returns false when external audio requires enabling redirection first.
+    @objc public static func canActivatePushToTalk(in vc: UIViewController?, redirectMic: Bool) -> Bool {
+#if !os(tvOS)
+        if !redirectMic && hasExternalAudioOutput() {
+            AlertControllerUtil.autoCompletion = false
+            AlertControllerUtil.showAlert(in: vc, title: "Tips".localized,
+                message: "pushToTalkExternalAudioTip".localized, withCancel: false,
+                buttonTitle: "OK".localized, countdown: 0)
+            return false
+        }
+#endif
+        return true
+    }
+
+    @objc public static func handleRedirectMicEnabledTip(in vc: UIViewController?) {
+#if !os(tvOS)
+        MicHandler.requestPermission { [weak vc] granted in
+            guard granted else {
+                // Preserve the existing Settings prompt when permission is denied.
+                MicHandler.requestPermission(nil)
+                return
+            }
+            AlertControllerUtil.autoCompletion = false
+            AlertControllerUtil.showAlert(in: vc, title: "Tips".localized,
+                message: "redirectMicPushToTalkTip".localized, withCancel: false,
+                buttonTitle: "OK".localized, countdown: 0)
+        }
+#endif
+    }
+
+    /// Completion receives true for Speaker (voice processing), false for EarPhone.
+    @objc public static func handleExternalAudioSelection(in vc: UIViewController?, completion: @escaping (Bool) -> Void) {
+        let select = {
+            guard hasExternalAudioOutput(), let vc else {
+                completion(true)
+                return
+            }
+            AlertControllerUtil.autoCompletion = false
+            AlertControllerUtil.cancelButtonString = "EarPhone".localized
+            AlertControllerUtil.showAlert(
+                in: vc,
+                title: "External Audio Output".localized,
+                message: "externalAudioSelectionTip".localized,
+                withCancel: true,
+                buttonTitle: "Speaker".localized,
+                countdown: 0,
+                completion: {
+                    completion(!AlertControllerUtil.actionCancelled)
+                })
+        }
+        if Thread.isMainThread { select() }
+        else { DispatchQueue.main.async(execute: select) }
+    }
+
+    /// Checks Bluetooth microphone inputs exposed by the current audio session.
+    /// Playback-only/A2DP sessions may hide microphones; this does not change the session.
+    @objc public static func hasBluetoothMic() -> Bool {
+        let session = AVAudioSession.sharedInstance()
+        let inputs = (session.availableInputs ?? []) + session.currentRoute.inputs
+        return inputs.contains { $0.portType == .bluetoothHFP || $0.portType == .bluetoothLE }
+    }
+
+    @objc public static func hasExternalAudioOutput() -> Bool {
+        return AVAudioSession.sharedInstance().currentRoute.outputs.contains(where: { output in
+            switch output.portType {
+#if os(tvOS)
+            case .bluetoothA2DP, .bluetoothHFP, .bluetoothLE:
+                return true
+#else
+            case .headphones, .lineOut, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE,
+                 .usbAudio, .HDMI, .airPlay:
+                return true
+#endif
+            default:
+                return false
+            }
+        })
+    }
+
     
+    
+    
+#if !os(tvOS)
+    @objc public static var barrelRollActive: Bool {
+        if UserDefaults.standard.bool(forKey: "barrelRollHasBeenActiveKey") {
+            return true
+        }
+
+        let active = PublicUtils.iOS17_5Available && PublicUtils.isIPad && PencilHandler.barrelRollChanged
+        if active {
+            UserDefaults.standard.set(true, forKey: "barrelRollHasBeenActiveKey")
+        }
+        return active
+    }
+    
+    @objc public static func isFirstLaunchingBarrelRollReminder() -> Bool {
+        let key = "isFirstLaunchingBarrelRollReminder"
+        let defaults = UserDefaults.standard
+        let launchedBefore = defaults.bool(forKey: key)
+        if !launchedBefore {
+            defaults.set(true, forKey: key)
+            return true
+        }
+        return false
+    }
+    
+    @objc public static func handleBarrelRollRedminder(in vc: UIViewController?) {
+        guard barrelRollActive, !AddOnProduct.PencilProPack.didInitiateInAppPurchaseAction, PublicUtils.isProductionBuild else {return}
+        
+        if isFirstLaunchingBarrelRollReminder() {
+        IAPManager.checkPurchaseInfo(.PencilProPack) { info in
+            AlertControllerUtil.cancelButtonString = "Learn more".localized
+            AlertControllerUtil.showAlert(
+                in: vc,
+                title: "Barrel Roll Support".localized,
+                message: (info.valid ? "barrelRollReminderTipValidIAP" : "barrelRollReminderTip").localized,
+                withCancel: true,
+                buttonTitle: "Not interested".localized,
+                countdown: 5,
+                completion:  {
+                    if AlertControllerUtil.actionCancelled {
+                        PublicUtils.openUrl(AddOnProduct.PencilProPack.productURL())
+                    }
+                })
+            }
+        }
+    }
+#endif
+
 
     @objc public static func gamepadOverlayFeatureTipTitle() -> String {
         LocalizationHelper.localizedString(forKey: "Gamepad Overlay")
@@ -744,6 +942,9 @@ import UIKit
     
     @objc public static var settingsMenuNavigationBarHeight: CGFloat {
         // return isIPhone() ? 44 : hostViewNavigationBarHeight
+        if PublicUtils.isFoldableRAMCached {
+            return hostViewNavigationBarHeight+11
+        }
         switch UIDevice.current.userInterfaceIdiom {
         case .phone:
             return PublicUtils.liquidGlassEnabled ? hostViewNavigationBarHeight+5 : hostViewNavigationBarHeight
@@ -809,7 +1010,7 @@ import UIKit
 
         let container = CALayer()
         container.frame = view.bounds
-        container.contentsScale = UIScreen.main.scale
+        container.contentsScale = PublicUtils.screen(for: view).scale
 
         let step: CGFloat = 0.05
         let totalSteps = Int(1.0 / step)
@@ -830,7 +1031,7 @@ import UIKit
             // 数值
             if true {
                 let t = CATextLayer()
-                t.contentsScale = UIScreen.main.scale
+                t.contentsScale = PublicUtils.screen(for: view).scale
                 t.font = UIFont.systemFont(ofSize: 13, weight: .medium)
                 t.fontSize = 13
                 t.foregroundColor = UIColor.red.cgColor

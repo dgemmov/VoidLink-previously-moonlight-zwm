@@ -54,6 +54,14 @@ import UIKit
             return ""
         }
     }
+
+    var inAppPurchaseActionKey: String {
+        "\(productId()).didInitiateInAppPurchaseAction"
+    }
+
+    var didInitiateInAppPurchaseAction: Bool {
+        UserDefaults.standard.bool(forKey: inAppPurchaseActionKey)
+    }
     
     func productName() -> String {
         switch self {
@@ -76,7 +84,7 @@ import UIKit
     func productDescription() -> String {
         switch self {
         case .PencilProPack:
-            return LocalizationHelper.localizedString(forKey: "PencilProPackDescription")
+            return LocalizationHelper.localizedString(forKey: "PencilProPackDescription", self.productName())
         default:
             return ""
         }
@@ -257,10 +265,11 @@ import UIKit
             switch verification {
             case .verified(let transaction):
                 await MainActor.run {
+                    IAPManager.purchaseCache[product] = true
                     self.delegate?.iapManagerDidPurchase(product)
+                    IAPManager.handlePurchaseSuccess(product)
                 }
                 await transaction.finish()
-                IAPManager.handlePurchaseSuccess(product)
             case .unverified(_, let err):
                 NotificationCenter.default.post(name: product.purchaseAbortedNotification(), object: PurchaseInterruption.unlockNow, userInfo:["interruption": PurchaseInterruption.unlockNow.rawValue])
                 await MainActor.run {
@@ -281,7 +290,7 @@ import UIKit
             let dataMan = DataManager()
             let settings = dataMan.retrieveSettings()
             settings?.onscreenControls = 1
-            settings?.pencilTickMode = NSNumber(value: PencilTickMode.ManualTick.rawValue)
+            settings?.pencilTickMode = NSNumber(value: PencilTickMode.manualTick.rawValue)
             dataMan.saveData()
             let profileMan = OSCProfilesManager.sharedManager(.zero)
             var toolkitProfileIndex = profileMan.getIndex(byName: "Pencil Pro")
@@ -318,6 +327,7 @@ import UIKit
                     try await AppStore.sync()
                     IAPManager.checkPurchaseInfo(product) { info in
                         if info.valid {
+                            IAPManager.purchaseCache[product] = true
                             IAPManager.handlePurchaseSuccess(product)
                             AlertControllerUtil.showAlert(
                                 in: viewController,
@@ -435,11 +445,29 @@ import UIKit
             }
         }
     }
-    
+    // MARK: - In-memory purchase cache
+
+    private static var purchaseCache: [AddOnProduct: Bool] = [:]
+
+    /// Refreshes all add-on entitlements asynchronously. Nothing is persisted.
+    @objc public static func refreshPurchaseCache() {
+        guard #available(iOS 15.0, *) else { return }
+        for product in AddOnProduct.allCases {
+            checkPurchaseInfo(product) { info in
+                purchaseCache[product] = info.valid
+            }
+        }
+    }
+
+    /// RAM-only query; returns false while the purchase status is unknown.
+    @objc public static func isValid(_ product: AddOnProduct) -> Bool {
+        return purchaseCache[product] ?? false
+    }
+
     @objc static public func inAppPurchaseAction(viewController: UIViewController, product: AddOnProduct){
         
         let alert = UIAlertController(title: product.productName(),
-                                      message: LocalizationHelper.localizedString(forKey: "No purchase found", product.productName()),
+                                      message: product.productDescription(),
                                       preferredStyle: .alert)
 
         let unlockAction = UIAlertAction(title: LocalizationHelper.localizedString(forKey: "Purchase Now"), style: .default) { _ in
@@ -462,9 +490,10 @@ import UIKit
         alert.addAction(restoreAction)
         alert.addAction(learnMoreAction)
 
+        UserDefaults.standard.set(true, forKey: product.inAppPurchaseActionKey)
+
         viewController.present(alert, animated: true, completion: {
         })
-
     }
     
     @objc static public func inAppPurchaseURLMessage(viewController: UIViewController, product: AddOnProduct){
